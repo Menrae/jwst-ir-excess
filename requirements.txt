@@ -1,0 +1,41 @@
+# requirements.txt
+#
+# Pinned loosely for now (Phase 1 scaffold). Will tighten pins once the
+# pipeline is functional and we know which versions were actually used
+# to produce results (important for reproducibility in the writeup).
+
+# Core scientific stack
+numpy>=1.26
+scipy>=1.11
+astropy>=6.0
+pandas>=2.1
+
+# Data structures for the tsdat-inspired pipeline stages
+xarray>=2024.2
+netCDF4>=1.6
+
+# Archive access
+astroquery>=0.4.7   # MAST, Gaia, VizieR (2MASS) access
+
+# Stellar photosphere models / synthetic photometry
+# TODO: confirm whether we need a dedicated model-grid package
+# (e.g. `synphot`, `pysynphot`, or direct Kurucz/PHOENIX grid files)
+# once photosphere.py design is finalized.
+synphot>=1.3
+
+# Plotting
+matplotlib>=3.8
+
+# Config handling
+pyyaml>=6.0
+
+# Testing
+pytest>=8.0
+
+# Notebooks
+jupyterlab>=4.0
+ipykernel>=6.29
+
+# LaTeX table export
+# TODO: confirm final choice; astropy.table has built-in latex writer,
+# so this may not be needed as a separate dependency.

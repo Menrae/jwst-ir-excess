@@ -1,0 +1,116 @@
+# quality_config.yaml
+#
+# STATUS: placeholder scaffold (Phase 1). Defines the qc_* flag conventions
+# the pipeline will use, following the tsdat-inspired quality-control
+# pattern described in RESEARCH_CONTEXT.md. No thresholds are finalized --
+# each TODO must be resolved with an explicit methodological justification
+# before it gates any result.
+
+qc_variables:
+  # Each flag below will be appended as a qc_<name> boolean/int variable
+  # on the xarray Dataset at the stage noted.
+
+  qc_no_gaia_match:
+    stage: retriever
+    description: >
+      Flags MIRI sources with no Gaia DR3 source found within
+      gaia.crossmatch_radius_arcsec (pipeline_config.yaml) of the
+      epoch-propagated position. These sources cannot get a Gaia-anchored
+      2MASS match either (qc_no_2mass_match will also be set) and cannot
+      proceed to photosphere fitting, which needs Gaia photometry.
+    # Added 2026-07-15 alongside retriever.py -- see RESEARCH_CONTEXT.md
+    # Decision Log for the crossmatch radius rationale.
+
+  qc_ambiguous_gaia_match:
+    stage: retriever
+    description: >
+      Flags MIRI sources with more than one Gaia DR3 candidate within the
+      match radius; the closest (in separation, post epoch-propagation) is
+      kept as the match, but the ambiguity is recorded rather than silently
+      resolved. This is the mechanism relied on to surface cases where the
+      fixed crossmatch radius is too loose for a crowded field (see
+      RESEARCH_CONTEXT.md Decision Log, 2026-07-15).
+
+  qc_no_2mass_match:
+    stage: retriever
+    description: >
+      Flags sources with no 2MASS Point Source Catalogue entry found within
+      twomass.crossmatch_radius_arcsec of the Gaia position propagated to
+      the 2MASS source's own observation epoch (VizieR 'JD' column). Also
+      set for any source with qc_no_gaia_match == True, since there is no
+      Gaia-anchored position to propagate.
+
+  qc_ambiguous_2mass_match:
+    stage: retriever
+    description: >
+      Flags sources with more than one 2MASS candidate within the match
+      radius; same rationale as qc_ambiguous_gaia_match.
+
+  qc_photometric_artifact:
+    stage: contaminants
+    description: >
+      Flags sources affected by MIRI detector persistence, saturation
+      halos, or other known instrumental artifacts.
+    # TODO: define detection criteria (e.g. from MIRI data quality flags
+    # in the JWST pipeline DQ arrays) rather than inventing our own.
+
+  qc_debris_disk_candidate:
+    stage: contaminants
+    description: >
+      Flags sources cross-matched against known/candidate debris disk
+      catalogues (see Jura 2003; Kennedy & Wyatt 2013).
+    # TODO: pick specific reference catalogue(s) to cross-match against.
+
+  qc_background_galaxy:
+    stage: contaminants
+    description: >
+      Flags sources whose morphology or colors are inconsistent with a
+      point-source stellar photosphere (likely misidentified background
+      galaxy).
+    # TODO: define morphological/color criteria.
+
+  qc_evolved_star:
+    stage: contaminants
+    description: >
+      Flags AGB stars / evolved giants, which are intrinsically mid-IR
+      bright and not evidence of a megastructure.
+    # TODO: define selection (e.g. color-cuts, Gaia photogeometric
+    # luminosity/temperature placement on HR diagram).
+
+  qc_known_variable:
+    stage: contaminants
+    description: >
+      Flags sources cross-matched against known variable star catalogues,
+      where phase-dependent IR emission could mimic excess.
+    # TODO: choose variable star catalogue(s) for cross-match.
+
+  qc_binary_companion_contamination:
+    stage: contaminants
+    description: >
+      Flags sources with a known/suspected binary companion that could
+      contribute mid-IR flux (e.g. Gaia non-single-star flag).
+    # TODO: confirm which Gaia DR3 non-single-star indicators are reliable
+    # enough to use for this flag.
+
+  qc_low_snr:
+    stage: excess
+    description: >
+      Flags sources where MIRI photometric SNR is too low for the excess
+      measurement to be trusted.
+    # TODO: define SNR threshold.
+
+  qc_poor_photosphere_fit:
+    stage: photosphere
+    description: >
+      Flags sources where the photosphere model fit itself is poor
+      (e.g. high reduced chi-square), independent of any mid-IR excess.
+    # TODO: define fit-quality threshold.
+
+anomaly_flag:
+  name: qc_anomalous_excess
+  stage: excess
+  description: >
+    Final composite flag: True only for sources with significant mid-IR
+    excess AND qc_photometric_artifact == False AND all other contaminant
+    flags == False. This is the flag that defines pipeline "candidates."
+    Must never be set based on excess significance alone.

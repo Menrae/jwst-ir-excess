@@ -1,0 +1,99 @@
+# pipeline_config.yaml
+#
+# STATUS: placeholder scaffold (Phase 1). Values below are illustrative
+# defaults / TODOs, not scientifically validated choices -- every TODO here
+# should be resolved through explicit discussion before Phase 2 code depends
+# on it.
+
+project:
+  name: jwst-ir-excess
+  version: "0.0.1"
+  description: >
+    Pipeline for detecting anomalous mid-infrared excess in stars observed
+    by JWST/MIRI, relative to stellar photosphere model predictions.
+
+# --- Retriever stage (pipeline/retriever.py) ---
+retriever:
+  mast:
+    mission: "JWST"
+    instrument: "MIRI"
+    # RESOLVED 2026-07-15 (see RESEARCH_CONTEXT.md Decision Log): MAST serves
+    # both a calibrated Level 3 source catalog (_cat.ecsv, automated aperture
+    # + isophotal photometry from the pipeline's source_catalog step) and the
+    # _i2d.fits mosaics. Libralato et al. (2024, arXiv:2311.12145) show the
+    # automated _cat.ecsv aperture photometry underperforms custom photometry
+    # and is not intended for high-precision point-source work. We therefore
+    # fetch _i2d as the primary product for excess-critical bands; _cat.ecsv
+    # is kept only as a discovery/target-list aid, not as excess photometry.
+    # The photometry-extraction method to run on _i2d (ePSF vs. aperture,
+    # etc.) is a separate, still-open design question for a later stage.
+    product_types:
+      primary: "i2d"      # Level 3 resampled mosaic -- excess-critical photometry source (method TBD)
+      auxiliary: "cat"    # Level 3 pipeline source catalog -- discovery/target-list aid only
+    filters:
+      - F770W
+      - F1000W
+  gaia:
+    catalogue: "gaiadr3.gaia_source"
+    # RESOLVED 2026-07-15 (see RESEARCH_CONTEXT.md Decision Log): MIRI-Gaia
+    # match radius. Based on Libralato et al.'s reported ~1-3 mas MIRI
+    # astrometric accuracy post-tweakreg (JWST aligns to Gaia by default),
+    # with margin for detector-edge distortion and epoch-propagation error.
+    # Applied AFTER propagating Gaia DR3 positions (with proper motion) to
+    # the JWST observation epoch, not on raw catalog coordinates.
+    crossmatch_radius_arcsec: 0.25
+  twomass:
+    catalogue: "II/246"  # 2MASS Point Source Catalogue (VizieR id)
+    # RESOLVED 2026-07-15 (see RESEARCH_CONTEXT.md Decision Log): Gaia-2MASS
+    # match radius. This is a fixed compromise, NOT a validated constant --
+    # 2MASS positional uncertainty spans ~80-100 mas (bright, Ks<14) to
+    # ~250 mas (faint, Ks~16) per the 2MASS Explanatory Supplement (Sec 4.9),
+    # more than 2x across the catalog. 0.5" covers most of that range without
+    # flooding crowded fields with ambiguous matches; the qc_* ambiguous-
+    # match flag (not a crowding-dependent radius) is the mechanism relied on
+    # to surface where this fixed value breaks down. Applied AFTER
+    # propagating Gaia DR3 positions to the 2MASS epoch, not on raw
+    # catalog coordinates. Revisit if ambiguous-match rate is high.
+    crossmatch_radius_arcsec: 0.5
+
+# --- Photosphere stage (pipeline/photosphere.py) ---
+photosphere:
+  # TODO: choose between Kurucz, PHOENIX, or blackbody approximation,
+  # and justify per source type (e.g. blackbody may be insufficient for
+  # cooler stars where molecular opacity matters).
+  model: "TODO_CONFIRM"
+  fit_bands:
+    - Gaia_G
+    - Gaia_BP
+    - Gaia_RP
+    - 2MASS_J
+    - 2MASS_H
+    - 2MASS_Ks
+
+# --- Excess scoring stage (pipeline/excess.py) ---
+excess:
+  primary_bands:
+    - F770W
+    - F1000W
+  # TODO: define excess significance threshold (e.g. sigma above photosphere
+  # prediction) once photometric uncertainty budget is understood.
+  significance_threshold_sigma: null
+
+# --- Contaminant classification stage (pipeline/contaminants.py) ---
+contaminants:
+  categories:
+    - debris_disk
+    - background_galaxy
+    - agb_or_evolved_giant
+    - photometric_artifact
+    - known_variable
+    - unresolved_binary
+  # TODO: identify specific reference catalogues for each category
+  # (e.g. debris disk catalogues, variable star catalogues) before
+  # implementing contaminants.py.
+
+# --- Output stage (pipeline/output.py) ---
+output:
+  catalogue_format: "fits"
+  figures_dir: "results/figures"
+  tables_dir: "results/tables"

@@ -1,0 +1,28 @@
+  - Implement pipeline/retriever.py: query MAST for public MIRI Level 3
+    imaging observations, download _i2d mosaics (primary) and _cat.ecsv
+    catalogs (discovery aid only, per Libralato et al. 2024 finding that
+    the automated pipeline photometry isn't precision-grade), cross-match
+    against Gaia DR3 and 2MASS with proper-motion epoch propagation, and
+    assemble the result to xarray/NetCDF (data level a0)
+  - Fix row-misalignment bug in crossmatch_gaia/crossmatch_2mass: results
+    were grouped by obs_id via set() iteration order, then reassigned onto
+    the source table positionally, silently attaching matches to the wrong
+    source whenever a batch spanned more than one observation. Caught via
+    an independent on-sky separation sanity check; fixed by scattering
+    results back by explicit row index instead
+  - Fix gaia_source_id precision loss: Gaia's ~19-digit source_id was being
+    stored in a float64 array (exact only up to 2^53), silently truncating
+    the primary key; now stored as its own int64 column
+  - Add a target_classification allowlist to the MAST query, for efficiency
+    rather than scientific necessity: skip MAST's much larger non-stellar
+    MIRI archive (galaxies, calibration, solar system) that would otherwise
+    just resolve to qc_no_gaia_match downstream. Inclusive by design --
+    ambiguous/unclassified targets still pass through to existing QC rather
+    than being dropped at query time
+  - Add qc_no_gaia_match / qc_ambiguous_gaia_match / qc_no_2mass_match /
+    qc_ambiguous_2mass_match flags to quality_config.yaml; resolve the
+    retriever-related TODOs in pipeline_config.yaml (product type, both
+    cross-match radii) with rationale recorded inline
+  - Record the MIRI photometry product investigation, literature citation
+    corrections, cross-match radius derivation, and both bug writeups in
+    RESEARCH_CONTEXT.md's Decision Log
