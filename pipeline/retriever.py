@@ -6,9 +6,11 @@ Stage 1 of the jwst-ir-excess pipeline: raw archive data -> data level a0.
 Queries the public JWST archive (MAST) for MIRI Level 3 imaging
 observations, downloads the Level 3 mosaic and pipeline source catalog for
 each, then cross-matches the MIRI source positions against Gaia DR3 and
-2MASS. The result is one xarray.Dataset (saved to NetCDF) with one row per
-MIRI point source, carrying the MIRI/Gaia/2MASS identifiers and photometry
-needed by later stages, plus explicit qc_* match-quality flags.
+2MASS, then pivots the result to one row per *star* (not per MIRI detection
+-- a star imaged in both F770W and F1000W would otherwise appear as two
+separate rows). The result is one xarray.Dataset (saved to NetCDF), carrying
+the MIRI/Gaia/2MASS identifiers and photometry needed by later stages, plus
+explicit qc_* match-quality flags.
 
 Key design decisions, and why -- see RESEARCH_CONTEXT.md Decision Log
 (2026-07-15 entries) for the full discussion:
@@ -37,6 +39,10 @@ Key design decisions, and why -- see RESEARCH_CONTEXT.md Decision Log
   VizieR queries by roughly the number of sources per field.
 - Ambiguous matches (more than one candidate within the configured radius)
   and non-matches are recorded as qc_* flags, never silently dropped.
+- The per-detection cross-matched table is pivoted to one row per star
+  (grouped by gaia_source_id, with unmatched sources kept as singleton
+  groups) so downstream stages can assume one-row-per-star as an a0
+  invariant rather than each re-deriving it. See pivot_to_one_row_per_star.
 """
 
 from __future__ import annotations
@@ -205,6 +211,12 @@ def load_miri_catalog_sources(manifest: Table, obs_table: Table) -> Table:
         sources["filter"] = obs_row["filters"]
         sources["proposal_id"] = obs_row["proposal_id"]
         sources["mosaic_path"] = mosaic_path
+        # Carried through for photosphere.py (white-dwarf grid skip,
+        # qc_pms_veiling_risk) -- MAST's target_classification was
+        # previously used only for the query-time stellar allowlist filter
+        # and then discarded. It describes the whole pointing/target, not
+        # the filter, so pivot_to_one_row_per_star treats it as star-level.
+        sources["target_classification"] = str(obs_row["target_classification"])
         sources["miri_ra"] = sources["sky_centroid"].ra.deg
         sources["miri_dec"] = sources["sky_centroid"].dec.deg
         # t_min is the observation start in MJD; used as the astrometric
@@ -438,20 +450,114 @@ def crossmatch_2mass(matched: Table, radius_arcsec: float) -> Table:
     return result
 
 
+# --- Star-level pivot --------------------------------------------------------
+
+
+def pivot_to_one_row_per_star(sources: Table, filters: list[str]) -> Table:
+    """Collapse the per-(MIRI detection, filter) table into one row per
+    *star*, so that photosphere.py and excess.py can assume one-row-per-star
+    as an a0 invariant rather than each doing their own grouping.
+
+    Without this, a star observed in both F770W and F1000W produces two
+    separate a0 rows (one per filter), each independently cross-matched --
+    unusable for a stage that needs both MIRI bands for the same star
+    side by side. See RESEARCH_CONTEXT.md Decision Log (2026-07-20).
+
+    Grouping key: 'star_id' = gaia_source_id for sources with a Gaia match
+    (qc_no_gaia_match == 0). Sources with NO Gaia match cannot be grouped by
+    gaia_source_id == 0 -- that would incorrectly merge every unmatched
+    detection in the table into a single "star". Each unmatched detection is
+    instead given its own unique negative sentinel key
+    (-(source_row_id + 1), guaranteed unique and disjoint from real Gaia
+    source_ids, which are always positive) so it becomes a singleton row.
+
+    Columns are split into:
+    - star-level (gaia_*, twomass_*, qc_* match flags): identical across
+      every row in a group by construction (they were looked up via the
+      shared Gaia match), so the first row's value is kept, not suffixed.
+    - filter-level (everything else -- miri_ra/dec, obs_id, proposal_id,
+      mosaic_path, obs_epoch_mjd, source_row_id, and the raw _cat.ecsv
+      photometry columns): suffixed with the filter name (e.g. miri_ra_F770W)
+      and pivoted wide. A star with a detection in only one of the
+      configured filters gets NaN in the other filter's columns --
+      explicit, not dropped -- and qc_single_filter_detection is set.
+
+    Known simplification: if a star was somehow observed more than once in
+    the *same* filter (e.g. two different proposals targeting it), only the
+    first (by source_row_id) detection is kept per (star, filter) pair --
+    logged, not silently dropped -- rather than picking the best or keeping
+    both. Revisit if this fires at a non-negligible rate in the real
+    archive; not expected to be common but not verified absent either.
+    """
+    df = sources.to_pandas()
+
+    has_gaia = ~df["qc_no_gaia_match"].astype(bool)
+    df = df.assign(
+        star_id=np.where(
+            has_gaia,
+            df["gaia_source_id"].astype(np.int64),
+            -(df["source_row_id"].astype(np.int64) + 1),
+        )
+    )
+
+    dup_mask = df.duplicated(subset=["star_id", "filter"], keep="first")
+    if dup_mask.any():
+        logger.warning(
+            "%d MIRI source rows were duplicate (star_id, filter) pairs -- "
+            "same star observed more than once in the same filter. Keeping "
+            "only the first (by source_row_id) per pair.",
+            int(dup_mask.sum()),
+        )
+        df = df.loc[~dup_mask]
+
+    star_level_cols = [
+        c for c in df.columns
+        if c == "gaia_source_id"
+        or c == "target_classification"
+        or c.startswith(("gaia_", "twomass_", "qc_"))
+    ]
+    filter_level_cols = [
+        c for c in df.columns if c not in star_level_cols and c not in ("star_id", "filter")
+    ]
+
+    star_frame = df.groupby("star_id", sort=False)[star_level_cols].first()
+    filter_frame = df.set_index(["star_id", "filter"])[filter_level_cols].unstack("filter")
+    filter_frame.columns = [f"{col}_{filt}" for col, filt in filter_frame.columns]
+
+    n_filters_present = df.groupby("star_id")["filter"].nunique()
+
+    pivoted = star_frame.join(filter_frame, how="outer")
+    pivoted["qc_single_filter_detection"] = (
+        n_filters_present.reindex(pivoted.index) < len(filters)
+    ).astype(np.int32)
+    pivoted = pivoted.reset_index()
+
+    result = Table.from_pandas(pivoted)
+    result["star_row_id"] = np.arange(len(result))
+    logger.info(
+        "Pivoted %d MIRI detections (filters: %s) into %d star-level rows "
+        "(%d with a detection in only one filter)",
+        len(df), ",".join(filters), len(result),
+        int(pivoted["qc_single_filter_detection"].sum()),
+    )
+    return result
+
+
 # --- Assembly and output -----------------------------------------------------
 
 
-def assemble_level_a0(sources: Table, config: dict) -> xr.Dataset:
-    """Pack the combined MIRI/Gaia/2MASS table into an xarray.Dataset (data
-    level a0), one row per MIRI point source. String columns are cast
-    explicitly since NetCDF has no native string type; units are recorded
-    as variable attrs rather than embedded in column names."""
+def assemble_level_a0(star_table: Table, config: dict, filters: list[str]) -> xr.Dataset:
+    """Pack the pivoted star-level table into an xarray.Dataset (data level
+    a0), one row per star (see pivot_to_one_row_per_star). String columns
+    are cast explicitly since NetCDF has no native string type; units are
+    recorded as variable attrs rather than embedded in column names."""
     ds = xr.Dataset(
-        data_vars={name: ("source", np.asarray(sources[name])) for name in sources.colnames},
-        coords={"source": sources["source_row_id"].data},
+        data_vars={name: ("star", np.asarray(star_table[name])) for name in star_table.colnames},
+        coords={"star": star_table["star_row_id"].data},
     )
-    ds["miri_ra"].attrs["units"] = "deg"
-    ds["miri_dec"].attrs["units"] = "deg"
+    for f in filters:
+        ds[f"miri_ra_{f}"].attrs["units"] = "deg"
+        ds[f"miri_dec_{f}"].attrs["units"] = "deg"
     ds["gaia_ra"].attrs["units"] = "deg"
     ds["gaia_dec"].attrs["units"] = "deg"
     ds["gaia_pmra"].attrs["units"] = "mas/yr"
@@ -467,7 +573,7 @@ def assemble_level_a0(sources: Table, config: dict) -> xr.Dataset:
 def save_level_a0(ds: xr.Dataset, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     ds.to_netcdf(path)
-    logger.info("Saved level a0 dataset to %s (%d sources)", path, ds.sizes["source"])
+    logger.info("Saved level a0 dataset to %s (%d stars)", path, ds.sizes["star"])
 
 
 # --- Orchestration ------------------------------------------------------------
@@ -484,7 +590,8 @@ def run(config: dict, download_dir: Path, output_path: Path) -> xr.Dataset:
     miri_sources = load_miri_catalog_sources(manifest, obs_table)
     gaia_matched = crossmatch_gaia(miri_sources, gaia_radius)
     fully_matched = crossmatch_2mass(gaia_matched, twomass_radius)
+    star_table = pivot_to_one_row_per_star(fully_matched, filters)
 
-    ds = assemble_level_a0(fully_matched, config)
+    ds = assemble_level_a0(star_table, config, filters)
     save_level_a0(ds, output_path)
     return ds

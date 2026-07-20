@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+
+# Downloaded/cached reference data (auto-fetched by pipeline/photosphere.py
+# on first use -- see ensure_kurucz_grid) and NetCDF pipeline outputs.
+data/cdbs/
+data/*.nc
+results/

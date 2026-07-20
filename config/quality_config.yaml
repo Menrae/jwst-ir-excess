@@ -106,6 +106,105 @@ qc_variables:
       (e.g. high reduced chi-square), independent of any mid-IR excess.
     # TODO: define fit-quality threshold.
 
+  qc_no_photosphere_grid:
+    stage: photosphere
+    description: >
+      Flags sources with no appropriate model-atmosphere grid available --
+      currently just white dwarfs (target_classification contains "White
+      dwarfs"), for which neither Kurucz nor PHOENIX is physically
+      appropriate. The photosphere fit is skipped entirely rather than run
+      against the wrong grid; no predicted_flux_* is produced for these
+      sources. See RESEARCH_CONTEXT.md Open Methodological Questions.
+    # Added 2026-07-20 alongside photosphere.py.
+
+  qc_pms_veiling_risk:
+    stage: photosphere
+    description: >
+      Flags pre-main-sequence targets (T Tauri stars, protostars,
+      protoplanetary-disk/circumstellar-disk targets -- see
+      pipeline_config.yaml photosphere.target_classification_tokens) where
+      the near-IR photometry used as the fit input may already carry
+      non-photospheric veiling/accretion excess. The fit still runs (a
+      comparison baseline is needed), but any resulting mid-IR "excess" for
+      these sources should not be trusted without specific review.
+    # Added 2026-07-20 alongside photosphere.py.
+
+  qc_possible_binary:
+    stage: photosphere
+    description: >
+      Flags sources with Gaia RUWE above photosphere.binarity.ruwe_threshold
+      (pipeline_config.yaml) or a nonzero non_single_star flag. The fit
+      still runs -- flagged, not excluded, per the project's flag-don't-drop
+      convention -- since an unresolved binary's blended SED would bias the
+      fit rather than invalidate it outright.
+    # Added 2026-07-20 alongside photosphere.py.
+
+  qc_grid_disagreement:
+    stage: photosphere
+    description: >
+      FGK-bucket sources only (see pipeline_config.yaml photosphere.grids):
+      flags when the Kurucz-default and PHOENIX-cross-check Teff fits
+      disagree by more than photosphere.grid_disagreement's threshold.
+      Kurucz remains the recorded Teff/predicted flux regardless -- this
+      flag surfaces the disagreement for downstream review rather than
+      auto-resolving it.
+    # Added 2026-07-20 alongside photosphere.py.
+
+  qc_no_mid_ir_model_coverage:
+    stage: photosphere
+    description: >
+      Flags sources whose primary model grid is PHOENIX (Husser et al. 2013,
+      via expecto) -- confirmed live 2026-07-20 that this grid's spectra
+      only extend to ~5.5 micron, fully short of both MIRI bands (F770W
+      starts at 6.2 micron; synphot raises a hard DisjointError, it does not
+      silently extrapolate). Cool stars (Teff <= photosphere.grids.cool_teff_max_k
+      -- M dwarfs, brown dwarfs, cool giants) get a substitute
+      predicted_flux_* via rj_extrapolation_spectrum rather than being left
+      with no prediction at all -- see qc_rj_extrapolated, which is always
+      set alongside this flag. This flag itself stays 1 regardless: it
+      records that the NATIVE grid didn't reach these wavelengths, which
+      remains true even when a substitute value is provided.
+    # Added 2026-07-20 alongside photosphere.py, discovered during
+    # implementation. RJ-extrapolation substitute added the same day after
+    # quantifying the gap (see RESEARCH_CONTEXT.md Decision Log) --
+    # ~10% of Gaia-matched stars in live-archive test samples, concentrated
+    # up to ~68% in protostar/YSO-classified fields.
+
+  qc_rj_extrapolated:
+    stage: photosphere
+    description: >
+      Set alongside qc_no_mid_ir_model_coverage=1: predicted_flux_* for
+      this source came from a Rayleigh-Jeans/blackbody-tail extrapolation
+      (see pipeline/photosphere.py:rj_extrapolation_spectrum), NOT a native
+      grid prediction. The blackbody is anchored to match the PHOENIX
+      model's own flux at its reddest computed wavelength (~5-5.5 micron),
+      not independently normalized, but still only approximates real
+      cool-star mid-IR opacity structure (e.g. water vapor bands) that a
+      pure blackbody won't capture.
+      **BLOCKING PREREQUISITE for excess.py**: sources with this flag set
+      must NOT be scored at equal confidence to a native-grid prediction in
+      excess.py's significance calculation until validated against real
+      cool stars with existing WISE/Spitzer mid-IR photometry (known
+      non-excess M dwarfs), producing an actual error-inflation factor (or
+      widened error bar) to apply -- not yet done. Treat predicted_flux_*_err
+      for these sources as a lower bound until then.
+    # Added 2026-07-20 alongside photosphere.py.
+
+  qc_extinction_uncertain:
+    stage: photosphere
+    description: >
+      Flags sources where a dust-map Av estimate could not be obtained --
+      either no usable Gaia parallax (missing or non-positive, so no
+      distance to query the 3D map at) or the source falls outside the
+      Bayestar19 map's footprint (confirmed empirically 2026-07-20 to
+      exclude declinations south of about -30 deg, since it is
+      Pan-STARRS1-based). Av is left unset (not guessed) for these sources;
+      any resulting excess should be treated as less certain, consistent
+      with how the literature precedent (Carrigan 2009; Wright et al. 2014;
+      Griffith et al. 2015) treats unmodeled extinction as a confusable
+      alternative explanation rather than something to silently ignore.
+    # Added 2026-07-20 alongside photosphere.py.
+
 anomaly_flag:
   name: qc_anomalous_excess
   stage: excess

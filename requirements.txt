@@ -17,11 +17,14 @@ netCDF4>=1.6
 # Archive access
 astroquery>=0.4.7   # MAST, Gaia, VizieR (2MASS) access
 
-# Stellar photosphere models / synthetic photometry
-# TODO: confirm whether we need a dedicated model-grid package
-# (e.g. `synphot`, `pysynphot`, or direct Kurucz/PHOENIX grid files)
-# once photosphere.py design is finalized.
+# Stellar photosphere models / synthetic photometry -- all smoke-tested
+# live and now used by pipeline/photosphere.py (see RESEARCH_CONTEXT.md
+# Decision Log, 2026-07-20 entries).
 synphot>=1.3
+stsynphot>=1.5   # Kurucz (ck04models) grid access, requires local CDBS files
+expecto>=0.1     # PHOENIX (Husser et al. 2013) grid access
+dustmaps>=1.0    # Bayestar19 3D dust map (extinction)
+dust_extinction>=1.4  # G23 (Gordon et al. 2023) reddening law
 
 # Plotting
 matplotlib>=3.8

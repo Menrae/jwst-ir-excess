@@ -57,11 +57,14 @@ retriever:
     crossmatch_radius_arcsec: 0.5
 
 # --- Photosphere stage (pipeline/photosphere.py) ---
+# RESOLVED 2026-07-20 (see RESEARCH_CONTEXT.md Decision Log): grid choice
+# varies by rough Teff (Kurucz via stsynphot/CDBS for hot/FGK-default,
+# PHOENIX via expecto for cool/FGK-cross-check), both confirmed queryable
+# live in this environment. logg is fixed (dwarf/giant not distinguished --
+# known simplification, see RESEARCH_CONTEXT.md). Extinction comes from the
+# Bayestar19 3D dust map (dustmaps), not a joint SED fit, per literature
+# precedent (Carrigan 2009; Wright et al. 2014; Griffith et al. 2015).
 photosphere:
-  # TODO: choose between Kurucz, PHOENIX, or blackbody approximation,
-  # and justify per source type (e.g. blackbody may be insufficient for
-  # cooler stars where molecular opacity matters).
-  model: "TODO_CONFIRM"
   fit_bands:
     - Gaia_G
     - Gaia_BP
@@ -69,6 +72,65 @@ photosphere:
     - 2MASS_J
     - 2MASS_H
     - 2MASS_Ks
+  grids:
+    hot_teff_min_k: 8000.0       # Teff >= this: Kurucz only
+    cool_teff_max_k: 3500.0      # Teff <= this: PHOENIX only
+    cross_check_buffer_k: 500.0  # widens cross-check zone around both
+                                  # boundaries -- see RESEARCH_CONTEXT.md
+                                  # (point 4, 2026-07-20) on why a hard
+                                  # cutoff alone would apply the cross-check
+                                  # inconsistently near a boundary
+    fixed_log_g: 4.5             # main-sequence assumption; dwarfs/giants
+                                  # not distinguished (known simplification)
+    kurucz_grid: "ck04models"
+    kurucz_metallicity: 0.0      # solar metallicity fixed -- known
+                                  # simplification, not appropriate for
+                                  # metal-poor halo stars (out of scope for
+                                  # now, see RESEARCH_CONTEXT.md)
+    cdbs_dir: "data/cdbs"        # auto-downloaded on first use (~5 MB,
+                                  # ckp00 subgrid only, given metallicity is
+                                  # fixed to solar) if not already present
+  grid_disagreement:
+    # qc_grid_disagreement threshold for the FGK cross-check bucket:
+    # |Teff_kurucz - Teff_phoenix| > max(abs_floor_k, rel_frac * Teff_kurucz)
+    abs_floor_k: 300.0
+    rel_frac: 0.05
+  binarity:
+    # Gaia RUWE > 1.4 is the commonly used DR3 convention for "poor
+    # single-star astrometric solution" (Lindegren et al.) -- used here as
+    # a starting flag threshold, not independently re-derived.
+    ruwe_threshold: 1.4
+  # qc_poor_photosphere_fit threshold (reduced chi-square). A starting
+  # value, NOT independently justified/validated -- same status as the
+  # 2MASS crossmatch radius in retriever.py (a stated, reasoned compromise,
+  # not a derived scientific threshold). Revisit once real fit results
+  # exist to see what a "poor fit" actually looks like in practice.
+  poor_fit_reduced_chi2_threshold: 5.0
+  extinction:
+    dust_map: "bayestar2019"
+    # mode='best' + max_samples=0 (see estimate_extinction in photosphere.py
+    # for the full rationale): drops BayestarQuery's peak memory from
+    # ~6.2 GB (max_samples=2, mode='median') to ~2.3 GB, confirmed live
+    # 2026-07-20 -- a documented tradeoff (maximum-posterior point estimate
+    # instead of median-of-samples), not just a performance default.
+    max_samples: 0
+    reddening_law: "G23"  # Gordon et al. (2023), via dust_extinction --
+                           # NOTE: this value is descriptive only, not
+                           # currently read by photosphere.py (which
+                           # imports G23 directly); update both together if
+                           # this ever changes.
+    r_v: 3.1
+  target_classification_tokens:
+    white_dwarf:
+      - "White dwarfs"
+    pms_veiling_risk:
+      - "Protoplanetary disks"
+      - "Protostars"
+      - "Pre-main sequence stars"
+      - "Young stellar objects"
+      - "T Tauri stars"
+      - "Proplyds"
+      - "Circumstellar disks"
 
 # --- Excess scoring stage (pipeline/excess.py) ---
 excess:
