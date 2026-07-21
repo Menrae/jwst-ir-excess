@@ -46,6 +46,103 @@ qc_variables:
       Flags sources with more than one 2MASS candidate within the match
       radius; same rationale as qc_ambiguous_gaia_match.
 
+  qc_no_mosaic_for_filter:
+    stage: miri_photometry
+    description: >
+      Per-filter: flags a star with no usable MIRI position/mosaic path for
+      this filter in a0 (e.g. a star only detected in the other configured
+      filter -- see retriever.py's qc_single_filter_detection). No flux
+      extraction is attempted; observed_flux_<band>/aperture_flux_<band>
+      are left NaN.
+    # Added 2026-07-21 alongside pipeline/miri_photometry.py.
+
+  qc_source_off_mosaic:
+    stage: miri_photometry
+    description: >
+      Per-filter: flags a star whose sky position, converted through the
+      mosaic's own WCS, falls too close to (or outside) the mosaic edge to
+      fit the PSF stamp (see miri_photometry.stamp_half_width_px). No flux
+      extraction is attempted for this filter.
+    # Added 2026-07-21 alongside pipeline/miri_photometry.py.
+
+  qc_saturated:
+    stage: miri_photometry
+    description: >
+      Per-filter: KNOWN SIMPLIFICATION -- a non-finite-pixel proxy for
+      saturation (any NaN/Inf pixel within the PSF-fit stamp), NOT true
+      DQ-bit-based saturation detection. The _i2d mosaic carries no DQ
+      extension to check directly.
+    # Added 2026-07-21 alongside pipeline/miri_photometry.py.
+
+  qc_crowded_source:
+    stage: miri_photometry
+    description: >
+      Per-filter: flags a star with another a0 star (Gaia-matched or not --
+      retriever.py's pivot keeps unmatched detections as singleton a0 rows
+      too) within miri_photometry.crowding.min_separation_px pixels in the
+      same mosaic. KNOWN SIMPLIFICATION: checks against other a0 stars
+      only, not every raw MIRI detection outside a0's own population.
+    # Added 2026-07-21 alongside pipeline/miri_photometry.py.
+
+  qc_psf_fit_failed:
+    stage: miri_photometry
+    description: >
+      Per-filter: flags photutils.psf.PSFPhotometry non-convergence
+      (flags != 0). Validated live 2026-07-21 against a real case: a source
+      that fit cleanly in F770W returned flags=12 in F1000W for the PN-TC-1
+      field (a real planetary nebula), independently corroborated by
+      _cat.ecsv's own is_extended=True flag and a nonsensical negative
+      aper_total_flux for the same position -- two independent measurements
+      agreeing the position isn't a clean point source in that band.
+    # Added 2026-07-21 alongside pipeline/miri_photometry.py.
+
+  qc_psf_aperture_disagreement:
+    stage: miri_photometry
+    description: >
+      Per-filter: flags a star where the PSF-fit flux (observed_flux, the
+      primary measurement) and the aperture-photometry cross-check
+      (aperture_flux) disagree by more than
+      miri_photometry.disagreement.rel_frac (relative) or abs_floor_jy
+      (absolute), whichever is larger. General-purpose caution flag, kept
+      for backward compatibility -- equal to the logical OR of
+      qc_psf_disagreement_faint and qc_psf_disagreement_complex below.
+      Investigated 2026-07-21 against 3 real fields of differing
+      density/faintness (PN-TC-1, a deliberately quiet CONTROLFIELD,
+      NGC-602's dense cluster): rate varies 15-69% by field, tracking field
+      character rather than indicating rel_frac is miscalibrated -- NOT
+      retuned as a result (see RESEARCH_CONTEXT.md for the full
+      investigation and evidence).
+    # Added 2026-07-21 alongside pipeline/miri_photometry.py.
+
+  qc_psf_disagreement_faint:
+    stage: miri_photometry
+    description: >
+      Per-filter: qc_psf_aperture_disagreement==True AND the source's SNR
+      (|observed_flux| / observed_flux_err, photutils' formal photon-noise
+      fit uncertainty) is below miri_photometry.disagreement.snr_threshold.
+      Indicates a genuinely marginal/low-S:N detection where photon noise
+      plausibly explains the PSF-vs-aperture disagreement on its own -- the
+      dominant mechanism found in PN-TC-1 and CONTROLFIELD (2026-07-21
+      investigation), where flagged sources were consistently 3-4x fainter
+      with ~4x lower SNR than clean sources in the same field.
+    # Added 2026-07-21, see pipeline/miri_photometry.py:classify_disagreement.
+
+  qc_psf_disagreement_complex:
+    stage: miri_photometry
+    description: >
+      Per-filter: qc_psf_aperture_disagreement==True AND the source's SNR
+      is at or above miri_photometry.disagreement.snr_threshold (or SNR
+      itself isn't computable). Indicates the disagreement can NOT be
+      explained by photon noise alone -- more likely blending, an
+      unresolved companion, or a PSF-modeling mismatch (e.g. MIRI's known
+      F770W/F560W cruciform gap). Concentrated in NGC-602's dense cluster
+      core in the 2026-07-21 investigation (its most extreme case: a
+      source with SNR=1425 still disagreed by 36%), but not exclusive to
+      dense fields -- classified per-source, not per-field. Relevant for
+      excess.py's YSO-field candidates, where crowding/blending risk is
+      elevated.
+    # Added 2026-07-21, see pipeline/miri_photometry.py:classify_disagreement.
+
   qc_photometric_artifact:
     stage: contaminants
     description: >

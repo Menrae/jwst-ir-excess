@@ -64,19 +64,24 @@ still not be assumed or cited until actually read.
 1. **Retriever** (`pipeline/retriever.py`) -- MAST (JWST/MIRI) + Gaia DR3 +
    2MASS ingestion, cross-match, and pivot to one row per star. Raw data ->
    data level a0.
-2. **MIRI photometry extraction** (module TBD -- not yet designed) --
+2. **MIRI photometry extraction** (`pipeline/miri_photometry.py` --
+   implemented and verified 2026-07-21; see Decision Log) --
    Measures the actual observed F770W/F1000W point-source flux from the
-   `_i2d` mosaics (ePSF vs. careful aperture photometry, method still open).
-   **Added as its own stage 2026-07-20**, correcting a gap in the previous
-   4-stage description: the Decision Log below (2026-07-15) already
-   concluded `_cat.ecsv` aperture photometry is not adequate as
+   `_i2d` mosaics. **Added as its own stage 2026-07-20**, correcting a gap in
+   the previous 4-stage description: the Decision Log below (2026-07-15)
+   already concluded `_cat.ecsv` aperture photometry is not adequate as
    excess-critical photometry (per Libralato et al. 2024), but no stage
    existed to produce the real replacement -- the architecture list simply
-   didn't have a place for it. This stage's internals are an open design
-   question (see below), deliberately not designed as part of the
-   photosphere.py discussion that surfaced the gap. -> extends data level a0
-   with observed MIRI flux, or a new intermediate level (TBD when designed).
-3. **Standardise** (`pipeline/photosphere.py`) -- Photosphere model fitting
+   didn't have a place for it. **Design resolved 2026-07-21** (see Decision
+   Log): model-PSF fitting via `stpsf` + `photutils.psf`, with aperture
+   photometry as a parallel cross-check, both corrected via the CRDS APCORR
+   reference file. **Implemented and verified end-to-end against real
+   PN-TC-1 archive data 2026-07-21** (see Decision Log) -- the primary
+   EE-corrected PSF-fit flux (`observed_flux_{band}`) matches
+   `_cat.ecsv`'s `aper_total_flux` to ~1-2% for QC-clean sources, resolving
+   the pre-correction ~0.70-0.82x deficit. -> outputs its own dataset
+   sharing a0/a1's `star` coordinate (observed MIRI flux), joined by
+   excess.py rather than folded back into a0 itself.
    (Kurucz/PHOENIX/blackbody, TBD, see Decision Log 2026-07-20 for grid
    accessibility findings) to optical + near-IR photometry; produces
    predicted mid-IR photosphere flux. -> data level a1.
@@ -133,12 +138,48 @@ back through every contaminant check.
       `qc_extinction_uncertain`; (2) the map's native unit needs an
       unverified conversion coefficient to reach Av -- see Decision Log,
       flagged rather than presented as final.
-- [ ] **(Added 2026-07-20)** What method should the new MIRI photometry
+- [x] **(Added 2026-07-20)** What method should the new MIRI photometry
       extraction stage (architecture item 2, above) use to measure observed
       F770W/F1000W point-source flux from the `_i2d` mosaics -- ePSF
       (Libralato et al. 2024 style) vs. careful aperture photometry?
       Explicitly deferred: this needs its own design discussion, not decided
-      alongside photosphere.py.
+      alongside photosphere.py. **Resolved 2026-07-21** (researcher's
+      decision, see Decision Log): model-PSF fitting (`stpsf` +
+      `photutils.psf.PSFPhotometry`, using `stpsf`'s `GriddedPSFModel`), not
+      a true empirical ePSF and not aperture-only. Careful aperture
+      photometry is retained as a parallel per-source cross-check
+      (`qc_psf_aperture_disagreement`), not as the primary measurement.
+- [x] **(Added 2026-07-21) BLOCKING PREREQUISITE FOR writing the MIRI
+      photometry-extraction module**: two items from the 2026-07-21 design
+      discussion were unverified and needed to be smoke-tested (or sourced)
+      before implementation starts, not assumed. **Both resolved 2026-07-21
+      -- see items (1) and (2) below and the corresponding Decision Log
+      entries. No implementation has been written yet.** --
+      (1) **Resolved 2026-07-21** (see Decision Log, end-to-end smoke test
+      entry): `photutils.psf.PSFPhotometry` does run against a real
+      `_i2d.fits` mosaic at real catalog source positions, using an
+      `stpsf`-generated PSF. Resolving this surfaced two follow-on
+      requirements that weren't anticipated in the design discussion --
+      local background subtraction is required (raw fit flux ran 2.3x high
+      without it), and even with it, PSF-fit flux ran systematically
+      ~0.70-0.82x the catalog's aperture flux across all successfully-fit
+      test sources, plausibly because the finite PSF-stamp size used
+      (`fov_pixels=15`, ~1.65") doesn't capture all of MIRI's real,
+      broad-winged PSF -- i.e. the PSF-fit flux likely needs its own
+      EE-style correction, not just the aperture cross-check. Folded into
+      item 2 below, which now covers both flux paths.
+      (2) **Resolved 2026-07-21** (see Decision Log, "Encircled-energy
+      calibration source found" entry): this was originally scoped only as
+      needed for the aperture-photometry cross-check, then severity-upgraded
+      the same day once the smoke test showed it's also needed for the
+      PRIMARY PSF-fit flux measurement (finite-PSF-stamp bias, systematic
+      ~0.70-0.82x, not a one-off -- see item 1). The source is the JWST
+      pipeline's own CRDS `apcorr` reference file (`jwst_miri_apcorr_0014.fits`,
+      current best reference confirmed live via CRDS's JSON-RPC API against
+      the live operational context, not guessed), which round-tripped a
+      known real test star's own `aper_total_flux` to 4 significant figures
+      -- high confidence. **Both blocking items for this module are now
+      cleared; no implementation has been written yet.**
 - [ ] **(Added 2026-07-20)** White dwarfs pass the retriever's
       `STELLAR_TARGET_CLASSIFICATIONS` allowlist, but neither Kurucz nor
       PHOENIX atmosphere grids are appropriate for them (both assume
@@ -738,3 +779,564 @@ gotten a native Kurucz prediction if they had been bucketed differently.
 Not resolved here -- worth keeping in mind when interpreting the ~10%
 figure, since it's an upper-bound-ish estimate of the population that
 *needs* RJ extrapolation, not a precise one.
+
+### 2026-07-21 -- MIRI photometry-extraction stage: method design discussion
+
+Design discussion for architecture item 2 (MIRI photometry extraction),
+explicitly deferred at photosphere.py's design time (see 2026-07-20 entries
+above) to its own discussion. Three candidate methods were considered:
+
+- **True empirical ePSF (Libralato et al. 2024's actual method):** build the
+  PSF from bright, isolated stars present in each field, per Anderson &
+  King-style methodology. Most faithful to the cited precedent, but
+  requires enough suitable stars *per field* to construct the PSF at all --
+  and retriever.py's own pivot verification (2026-07-20 entry above) showed
+  this project's fields are often point-source-poor (PN-TC-1: only 2 real
+  Gaia-matched stars out of 40 detections, most fields singleton-dominated).
+  Genuinely stellar targets observed by MIRI are typically isolated
+  point-source targets, not dense clusters, so a per-field empirical PSF is
+  frequently infeasible here even before counting the implementation cost
+  of replicating a paper's custom fitting pipeline.
+- **Careful aperture photometry (own aperture choice, not `_cat.ecsv`'s):**
+  simple and fast to implement via `photutils.aperture`, but this is
+  methodologically the same category of approach (aperture photometry) that
+  Libralato et al. found underperforms for high-precision point-source work
+  -- the exact finding that drove the 2026-07-15 decision to not treat
+  `_cat.ecsv` as excess-critical photometry in the first place. Doing our
+  own aperture photometry doesn't escape that critique, even with better
+  aperture/background choices.
+- **Model-PSF fitting (`stpsf` + `photutils.psf`):** a simulated PSF, not an
+  empirically-built one, but fit via PSF-fitting rather than raw aperture
+  summation -- methodologically closer to Libralato's PSF-fitting approach
+  than plain aperture photometry, without requiring a per-field empirical
+  PSF our sample can't reliably support.
+
+**Decision (researcher's call, 2026-07-21):** model-PSF fitting is primary.
+`stpsf` (the renamed `webbpsf`) generates a MIRI PSF; `stpsf.MIRI().psf_grid()`
+returns a spatially-varying `GriddedPSFModel`-compatible grid, which
+`photutils.psf.PSFPhotometry`/`IterativePSFPhotometry` consume directly --
+this is the standard, documented photutils workflow for JWST PSF
+photometry, not a bespoke integration. Careful aperture photometry (with an
+encircled-energy aperture correction) is retained as a **parallel per-source
+cross-check**, not the primary measurement -- flagged
+`qc_psf_aperture_disagreement` if the two diverge, following the same
+flag-don't-silently-trust pattern as `qc_grid_disagreement` in
+photosphere.py.
+
+**Explicit acknowledgment: this is a real precision gap versus Libralato et
+al.'s method, not a free substitute.** A model PSF from `stpsf` does not
+capture actual per-field, per-epoch PSF variation the way an empirical PSF
+built from real stars in that exact field/epoch does (focus drift, real
+optical-path deviations from the as-built/as-flown telescope vs. the
+modeled one). This should be stated plainly as a methodological limitation
+in any writeup, not presented as equivalent to Libralato et al.'s ePSF
+photometry -- it is the same tradeoff in kind as the Bayestar
+`mode='best'` vs `'median'` and PHOENIX RJ-extrapolation caveats already
+logged elsewhere in this file: a deliberate, stated compromise driven by
+what's actually feasible against this specific dataset, not a claim of
+equal precision to the literature precedent.
+
+**Smoke test performed before deciding (live, not assumed):**
+`pip install stpsf` installed cleanly; `stpsf.MIRI()` auto-downloaded its
+reference data (~129 MB, to `~/data/stpsf-data` in this environment) on
+first use with no manual step, much smaller than Bayestar's ~700 MB;
+`calc_psf(oversample=2, fov_pixels=21)` for F770W completed in ~8.9 s and
+returned a sensible 42x42 array at the expected pixel scale (0.0555
+arcsec/px, oversampled from MIRI's ~0.11 arcsec/px). `psf_grid` and the
+`photutils.psf` classes (`GriddedPSFModel`, `PSFPhotometry`,
+`IterativePSFPhotometry`, `EPSFBuilder`) were confirmed to exist and import
+cleanly (`photutils` 3.0.0, already installed). **Confidence: high** that
+the toolchain exists and works in isolation (PSF generation, grid export,
+photutils class availability) -- **not yet confirmed** end-to-end against
+real mosaic data; see the two blocking items below.
+
+**Explicitly NOT yet verified -- logged as blocking prerequisites for
+writing the module, not just open notes** (see corresponding Open
+Methodological Questions entry, added 2026-07-21):
+
+1. `photutils.psf.PSFPhotometry` has not been run against a real `_i2d.fits`
+   mosaic with a real source's pixel position -- only PSF generation in
+   isolation (`calc_psf`, `psf_grid`) has been tested live. Whether the full
+   fitting workflow (WCS-based sky-to-pixel conversion, initial position/
+   flux guesses, fit convergence, group/blend handling) behaves sensibly
+   against real MIRI mosaic data is unconfirmed.
+2. The source of the encircled-energy calibration values needed for the
+   aperture-photometry cross-check's aperture correction (CRDS vs. JDox vs.
+   elsewhere) has not been identified or fetched.
+
+Per project convention (verify before relying on it, as with Kurucz/
+PHOENIX/SVO/Bayestar in photosphere.py and MAST/Gaia/2MASS in retriever.py),
+neither item is assumed to work -- both must be resolved (or, if they turn
+out to be blocking, force a re-opened design discussion) before
+implementation of this module starts. Step 2, next: a real `PSFPhotometry`
+smoke test against the PN-TC-1 field (the same live archive data already
+used to verify retriever.py and photosphere.py).
+
+### 2026-07-21 -- End-to-end PSFPhotometry smoke test against real PN-TC-1 data (blocking item 1)
+
+Re-downloaded the same PN-TC-1 (proposal 4706, target `PN-TC-1`, obs
+`jw04706-o009_t008_miri_f770w/f1000w-brightsky`) F770W/F1000W `_i2d.fits`
+mosaics and `_cat.ecsv` catalogs used to verify retriever.py/photosphere.py
+(not re-used from any cache -- none was found locally, so this was a fresh
+live MAST download), then ran `photutils.psf.PSFPhotometry` with an
+`stpsf`-generated MIRI PSF (`ImagePSF`, `DET_DIST` extension, native
+0.1109"/px, matched to the mosaic's own confirmed 0.1108"/px WCS pixel
+scale) against real sources at real catalog positions -- not synthetic
+data. This resolves blocking item 1 (the toolchain does run end-to-end
+against real data) but surfaces two real, unanticipated findings that
+change what the module needs to do, not just confirming it works:
+
+1. **Local background subtraction is required, not optional.**
+   `PSFPhotometry` without a `local_bkg_estimator` returned a flux 2.3x the
+   catalog's `aper_total_flux` for the first test source (label 6, F770W,
+   aper_total_flux=1.568e-3 Jy) -- the fit window includes real, substantial
+   local background (~350-450 MJy/sr against a ~900 MJy/sr peak, confirmed
+   from the actual pixel cutout, not assumed), and an unsubtracted PSF fit
+   absorbs it into the flux. Adding `photutils.background.LocalBackground`
+   (`MMMBackground`, inner/outer radius 8/14 px) brought the ratio to 0.82
+   for that source.
+2. **Even with background subtraction, PSF-fit flux runs systematically low
+   (~0.70-0.82x the catalog aperture flux) across all 3 successfully-fit
+   sources tested (2 in F770W, 1 in F1000W on the same physical star as one
+   of the F770W sources, cross-matched by sky position -- see the dedicated
+   `label` gotcha entry immediately below for why that cross-match had to
+   be done by sky position, not by catalog `label`).** Plausible cause, not
+   yet confirmed: the `fov_pixels=15` (~1.65") PSF stamp used here is finite
+   and MIRI's real PSF has broad diffraction wings extending well beyond
+   that, so a fixed-size PSF stamp is missing real flux the same way an
+   aperture without an encircled-energy correction would be. **Severity:
+   this is not a minor refinement to the aperture cross-check -- it means
+   the module's PRIMARY measurement (PSF-fit flux) is itself missing an
+   EE-style correction, and left uncorrected would silently ship every
+   `observed_flux_*` value biased low by ~20-30% before excess.py ever
+   compares it against a predicted photosphere flux.** In an
+   excess-detection pipeline, a systematic downward bias on the observed
+   side is not neutral -- it suppresses genuine excess and could also
+   create spurious *deficits*, so this cannot be treated as a secondary
+   cross-check concern. Folded into blocking item 2 (see Open Methodological
+   Questions above, severity upgraded 2026-07-21) -- it now covers both flux
+   paths, not just the aperture cross-check it was originally scoped for.
+
+**A second, genuine (non-bug) finding, from a corrected re-run after fixing
+the `label` mistake described below:** the fit did not converge
+(`flags=12`) for the same physical source in F1000W. This was not a
+`PSFPhotometry` failure in isolation -- the pipeline's own automated
+`_cat.ecsv` catalog independently reports a negative `aper_total_flux`
+(-3.85e-3 Jy) and `is_extended=True` for the same position in F1000W, and
+the raw pixel cutout shows a central dip rather than a point-source peak
+(consistent with real extended/nebular structure, plausible given the
+target is an actual planetary nebula, not a clean point-source field).
+**Conclusion: this specific source is not describable as a point source in
+F1000W, and both the existing automated pipeline and the new PSF-fit
+approach agree on that independently** -- this is exactly the kind of case
+`qc_psf_fit_failed` (already scoped in the 2026-07-21 design discussion
+above) needs to catch and flag rather than silently reporting a fitted
+number, not a defect in the chosen method.
+
+**Net effect on blocking item 1:** resolved -- the toolchain works
+end-to-end against real mosaic data, real catalog-derived positions, and
+real WCS conversion (confirmed to agree with the catalog's own
+`xcentroid`/`ycentroid` to ~1e-6 px). **NOT resolved, and severity-upgraded,
+carried forward into blocking item 2:** the EE-correction question now
+applies to the PSF-fit path -- this module's primary, load-bearing
+measurement -- not just the aperture cross-check it was originally scoped
+for. Until the encircled-energy calibration source (CRDS vs. JDox vs.
+elsewhere) is identified, neither flux measurement in this module can be
+trusted at better than the ~10-30% level, and that error is systematic
+(one-directional, low), not random -- it would not average out across the
+sample.
+
+### 2026-07-21 -- Gotcha: `_cat.ecsv` `label` is not a stable cross-filter source identifier
+
+Discovered while running the F1000W leg of the PSFPhotometry smoke test
+above: the first attempt reused "label 6" from the F1000W `_cat.ecsv`
+directly, assuming it referred to the same physical star as F770W's
+label 6 (since both catalogs came from the same field/pointing). It does
+not. `label` is a per-image, per-catalog detection index assigned
+independently by each observation's own `source_catalog` run -- it has no
+cross-filter meaning at all. This produced a nonsensical 0.26 flux ratio
+that only made sense once `sky_centroid` was checked directly: F770W
+label 6 and F1000W label 6 are different physical stars, ~0.045 deg
+(~162 arcsec) apart on sky, far outside any plausible match radius. Fixed
+by cross-matching the F770W source's actual sky coordinate through the
+F1000W mosaic's WCS instead of reusing the label.
+
+**Why this gets its own entry instead of staying a side note:** this is
+exactly the same class of failure as the retriever.py row-misalignment bug
+(2026-07-15 entry above) -- a silent, non-crashing mismatch between two
+tables that "looks" aligned (same label, same field) but isn't, unless
+explicitly checked. It's also a trap this project is now positioned to hit
+again: excess.py's entire job is joining per-filter observed flux
+(this stage) against per-star predicted flux (photosphere.py a1) and the
+existing per-filter a0/a1 columns (`observed_flux_{band}`,
+`predicted_flux_{band}`), and any later ad-hoc analysis or notebook that
+reaches back into a raw `_cat.ecsv` for a cross-check or plot is at risk of
+the same mistake if it joins on `label` instead of `star_id`/
+`gaia_source_id` or an explicit sky-position cross-match.
+
+**Rule going forward:** never use `_cat.ecsv`'s `label` column as a join
+key across filters/observations, in this module or anywhere downstream
+(notebooks included) -- only `star_id`/`gaia_source_id` (post-pivot,
+per retriever.py's `pivot_to_one_row_per_star`) or an explicit sky-position
+cross-match are safe. This module's design should extract flux by
+converting each star's already-known `miri_ra_{filter}`/`miri_dec_{filter}`
+(from a0) through the target mosaic's own WCS, never by re-matching against
+`_cat.ecsv` `label` values.
+
+### 2026-07-21 -- Encircled-energy calibration source found: CRDS APCORR reference file (blocking item 2 resolved)
+
+Tracked down the source for the encircled-energy/aperture-correction values
+needed by both the aperture cross-check and (per the smoke test above) the
+primary PSF-fit flux measurement. Verified live, not assumed from
+documentation alone:
+
+- **Source:** the JWST calibration pipeline's own APCORR reference file
+  (CRDS reference type `apcorr`), the same file the pipeline's
+  `source_catalog` step uses internally to produce `_cat.ecsv`'s
+  `aper30/50/70_flux` -> `aper_total_flux` correction. FITS format,
+  `BINTABLE` extension `APCORR`, columns `filter`, `subarray`,
+  `eefraction`, `radius` (pixels), `apcorr` (multiplicative factor, >1),
+  `skyin`/`skyout` (sky-annulus radii, pixels) -- confirmed by fetching and
+  inspecting the actual file, not just its documented schema.
+- **Current best reference identified via CRDS's own JSON-RPC API** (not
+  guessed): `get_default_context` against `https://jwst-crds.stsci.edu/json/`
+  returned the live operational context `jwst_1535.pmap`; `get_best_references`
+  against that context with realistic MIRI/F770W/FULL header parameters
+  returned `jwst_miri_apcorr_0014.fits` as the currently active MIR_IMAGE
+  apcorr reference (superseding older versions found by guessing sequential
+  filenames, e.g. 0005/0008/0010, which were earlier or wrong-mode
+  candidates -- 0006/0007/0012 turned out to be MRS/coronagraphy apcorr
+  files with a different schema, not MIR_IMAGE). Downloadable directly over
+  plain HTTPS (`https://jwst-crds.stsci.edu/unchecked_get/references/jwst/
+  jwst_miri_apcorr_0014.fits`, no authentication), and readable with
+  `astropy.io.fits` alone -- neither the `crds` nor `jwst` pipeline packages
+  (both confirmed NOT installed in this environment) are needed to use it.
+- **Provenance (from the file's own header, not asserted):** `PEDIGREE
+  INFLIGHT 2022-05-25 2024-06-02`; `HISTORY` states the aperture corrections
+  "were computed starting from encircled-energy profiles measured with
+  flight LVL-3 data and normalized to infinity using WebbPSF" -- i.e.
+  anchored to real in-flight measurements, not a purely simulated
+  correction, which is a stronger basis than the module's own PSF-fit path
+  (that one *is* purely `stpsf`-model-based, per the 2026-07-21 design
+  discussion above).
+- **Confirmed live for F770W and F1000W specifically:** both filters have 7
+  rows each (`FULL` subarray, EE fractions 0.2-0.8 in steps of 0.1) with
+  distinct radius/apcorr/skyin/skyout values (e.g. F770W EE=0.7: radius
+  4.22 px, apcorr 1.442; F1000W EE=0.7: radius 4.60 px, apcorr 1.453) --
+  the two prediction bands this whole pipeline cares about are both
+  covered, not just assumed to be by analogy from other filters.
+- **Closed-loop verification against the same real PN-TC-1 test star used
+  in the PSFPhotometry smoke test above:** `aper70_flux (0.0010871 Jy) x
+  apcorr(EE=0.7) (1.442304) = 0.0015680 Jy`, versus the catalog's own
+  `aper_total_flux = 0.0015680 Jy` for that exact star -- **ratio 1.0000 to
+  4 significant figures.** This isn't circumstantial (matching filenames/
+  descriptions) -- it's a direct numerical reproduction of the automated
+  pipeline's own published total-flux value from this reference file's
+  numbers, which is about as strong a confirmation as this kind of check
+  can give without reading the `source_catalog` step's source code
+  directly.
+
+**Confidence: high.** This is the correct, current, in-flight-calibrated
+source for both F770W and F1000W, confirmed via (1) live CRDS best-
+reference lookup against the actual operational context rather than a
+guessed filename, (2) the file's own schema matching the documented APCORR
+format, and (3) an exact numerical round-trip against real archive data
+independent of anything CRDS-side. Remaining uncertainty is scoped, not
+open-ended: how to translate this table (built for circular-aperture
+photometry) into a correction for the model-PSF fit's finite-stamp flux is
+an implementation detail, not resolved here -- but the raw ingredients
+(the real EE-vs-radius curve for both bands) are now in hand. Worth noting
+as a sanity-checking data point for that implementation step: the PSF
+stamp used in the smoke test above (`fov_pixels=15`, ~7.5 px radius) falls
+between this table's EE=0.7 (radius ~4.2-4.6 px) and EE=0.8 (radius
+~6.7-8.9 px) rows for both filters -- consistent with, and a good
+independent explanation for, the ~0.70-0.82x flux deficit actually measured
+in that smoke test, not merely a coincidence.
+
+**Net effect:** blocking item 2 (Open Methodological Questions above) is
+resolved -- the encircled-energy calibration source has been identified,
+confirmed live, and validated end-to-end against real data. Both blocking
+items for this module are now cleared. Per the researcher's standing
+instruction, no implementation of the MIRI photometry-extraction module has
+been written yet.
+
+### 2026-07-21 -- `pipeline/miri_photometry.py` implemented and verified against real PN-TC-1 data
+
+Implemented the module per the 2026-07-21 design discussion, then verified
+by re-running the actual real-data chain: reused retriever.py's own
+functions (not a reimplementation) to rebuild a live a0 dataset for
+PN-TC-1 (same 40 stars as the earlier retriever.py/photosphere.py
+verifications), then ran `miri_photometry.run()` against it end-to-end.
+
+**Design decisions carried through into the code, not just the docs:**
+
+- `observed_flux_{band}` (the PSF-fit measurement) is EE-corrected by
+  construction -- the multiplication by the APCORR table's `apcorr` value
+  happens directly in `extract_flux_for_filter`, with an inline comment at
+  the exact multiplication ("PRIMARY measurement: PSF-fit flux,
+  EE-corrected... see module docstring for why this multiplication is
+  required, not optional") and the same point made at module-docstring
+  level, so a future reader doesn't need to reconstruct this session's
+  history to know which flux is corrected.
+- The module never opens `_cat.ecsv` at all -- positions come only from
+  a0's `miri_ra_{band}`/`miri_dec_{band}`/`mosaic_path_{band}` columns,
+  which are already keyed by `star_id`/`gaia_source_id` via retriever.py's
+  Gaia-anchored cross-match. The `label`-instability trap is closed
+  structurally, not by a convention someone has to remember.
+- `qc_psf_fit_failed_{band}` uses photutils' own `flags != 0` check
+  (`flags_indicate_fit_failure`), with a dedicated regression test
+  (`test_flags_indicate_fit_failure_nonzero_flags`) pinned to `flags=12`,
+  the exact value observed for the real extended PN-TC-1 source in the
+  original smoke test.
+
+**Bug caught before the first successful run (self-caught, not
+user-caught):** `assemble_miri_photometry` initially passed the whole
+per-filter neighbor-index dict (`mosaic_path -> [(star_index, x, y), ...]`)
+into `extract_flux_for_filter` instead of the list for that star's own
+mosaic -- `ValueError: too many values to unpack`, since the function tried
+to iterate the dict's keys as `(idx, nx, ny)` tuples. Fixed by renaming the
+parameter to `neighbor_index_by_mosaic` and looking up
+`.get(mosaic_path, [])` inside the function, after `mosaic_path` is known.
+
+**Second bug caught before the first successful run:** the generic
+`f"{k}_{filt}"` column-suffixing produced `observed_flux_err_F770W`
+instead of `observed_flux_F770W_err` -- inconsistent with
+photosphere.py's established `predicted_flux_{band}_err` convention
+(filter before `_err`, not after), and immediately surfaced as a `KeyError`
+when setting units attrs on the expected column name. Fixed with a small
+`_suffix_column` helper (filter-before-`_err`), unit-tested
+(`test_suffix_column_puts_filter_before_err_suffix`).
+
+**Live run against real PN-TC-1 data (40 stars, both filters), 14.3 s
+total** (fast because PSF templates and mosaic files are cached once per
+run, not per star):
+
+1. **The aperture cross-check reproduces `_cat.ecsv`'s `aper_total_flux`
+   EXACTLY -- ratio 1.0000 for every single one of the 41 star/filter
+   combinations tested (28 F770W + 13 F1000W), not just the one star
+   checked during the earlier CRDS-source-finding verification.** This is
+   strong, broad confirmation that the EE-correction methodology itself
+   (radius/sky-annulus/apcorr all from the same APCORR table row) is
+   correct, independent of anything PSF-fit-specific.
+2. **The PRIMARY PSF-fit measurement (`observed_flux_{band}`), restricted
+   to QC-clean sources (`qc_psf_fit_failed==0` AND
+   `qc_psf_aperture_disagreement==0`): median ratio to `aper_total_flux` =
+   1.0155 (F770W, n=14), 1.0023 (F1000W, n=4).** This is the direct answer
+   to the instruction's core question -- the pre-correction 0.70-0.82x
+   deficit found in the original 3-star smoke test is resolved for the
+   population that would actually reach excess.py unflagged, to within a
+   few percent.
+3. **New finding, not visible in the original 3-star smoke test (which
+   only tested bright sources): for fainter and/or flagged sources, the
+   PSF-fit-to-catalog ratio has real, substantial scatter (as low as 0.32,
+   as high as 37 for one very-low-flux source where both measurements are
+   close to noise) -- but this population is exactly what
+   `qc_psf_fit_failed`/`qc_psf_aperture_disagreement` catch.** Of the 41
+   star/filter combinations, 19 were flagged by one or both QC flags; the
+   ratio distribution for the *unflagged* 18 is the tight ~1.00-1.02 result
+   in point 2. This is read as the QC design working as intended (catching
+   exactly the population where the finite-stamp/local-fit approach is
+   less trustworthy), not as a failure of the EE correction -- but the
+   disagreement rate (19/41, ~46%) is much higher than anticipated from the
+   original 3-star test, and is a real, measured data point that should
+   inform whether `disagreement.rel_frac` (currently 0.2, a stated
+   compromise) needs revisiting once more fields are tested.
+4. **Regression check on `qc_psf_fit_failed`:** the same real extended
+   source from the original smoke test (`gaia_source_id
+   5954912374289120896`, RA/Dec 266.39707/-46.08996, exact match) was
+   independently re-identified by the full module and again produced
+   `qc_psf_fit_failed_F1000W=1` (with `aper_total_flux` and
+   `observed_flux` both near-zero/negative for that band) -- the same
+   real, independently-corroborated (by `_cat.ecsv`'s own `is_extended`
+   flag) non-point-source case is caught correctly by the actual
+   implementation, not just the scratch smoke-test script.
+
+**Status:** `pipeline/miri_photometry.py` implemented, unit-tested (17 fast
+tests covering APCORR lookup, stamp geometry, QC-flag logic, and aperture
+photometry against a synthetic known-flux array -- PSF-fitting itself is
+smoke-tested live only, per the same convention as photosphere.py's
+stsynphot/expecto/dustmaps code), and verified end-to-end against real
+PN-TC-1 archive data. `config/pipeline_config.yaml` and `requirements.txt`
+updated accordingly (`photutils>=3.0`, `stpsf>=2.2`).
+
+### 2026-07-21 -- `qc_psf_aperture_disagreement` rate investigated against two more real fields: genuine population, not threshold miscalibration
+
+PN-TC-1 alone showed a `qc_psf_aperture_disagreement` rate of ~46-69%
+across the two bands -- much higher than the original 3-star smoke test
+implied. Two explanations were live: (1) the flag is correctly catching a
+genuinely large faint/marginal population in real data, or (2) `rel_frac`
+(0.2, a stated compromise from the initial design) was calibrated on too
+small a sample and is over-flagging otherwise-fine sources. Tested against
+two more real archive fields chosen for contrasting stellar
+density/faintness profiles, the same way the PHOENIX cool-bucket gap was
+quantified with the 18-observation diverse sample (2026-07-20 entries
+above): **CONTROLFIELD** (`jw03523-o004_t003`, a deliberately quiet/sparse
+comparison field, 306 a0 stars) and **NGC-602** (`jw02662-o004_t001`, a
+genuine dense young star-forming cluster in the SMC, 1095 a0 stars) --
+chosen via a live MAST `target_classification` survey, not assumed.
+`miri_photometry.run()` was run end-to-end on both (via the same real
+retriever.py chain used for PN-TC-1, not synthetic data).
+
+**Disagreement rate by field** (excluding `qc_psf_fit_failed` sources):
+
+| Field | F770W | F1000W |
+|---|---|---|
+| PN-TC-1 (planetary nebula) | 50.0% (14/28) | 69.2% (9/13) |
+| CONTROLFIELD (quiet/sparse) | 16.3% (25/153) | 15.4% (26/169) |
+| NGC-602 (dense young cluster) | 47.2% (318/674) | 40.3% (176/437) |
+| **Combined** | **38.4%** (550/1432) | |
+
+**This alone is evidence against explanation (2).** A miscalibrated global
+threshold would over-flag at a roughly similar rate everywhere, regardless
+of field content -- instead the rate spans 15% to 69%, tracking field
+character (a field deliberately chosen to be quiet has the lowest rate by
+a wide margin) in exactly the way a threshold correctly responding to real
+photometric difficulty would.
+
+**Per-field flagged-vs-clean comparison** (done per-field, not pooled --
+pooling conflates NGC-602's intrinsically fainter/more-distant population
+with the flag's actual behavior):
+
+| Field | flagged/clean aperture-flux ratio | flagged SNR (median) | clean SNR (median) | flagged crowded% | clean crowded% |
+|---|---|---|---|---|---|
+| PN-TC-1 | 0.38x (flagged fainter) | 12.0 | 47.8 | 57% | 44% |
+| CONTROLFIELD | 0.29x (flagged fainter) | 57.4 | 238.1 | 34% | 30% |
+| NGC-602 | **2.52x (flagged BRIGHTER)** | **46.4 (higher)** | 30.7 | **36% (lower)** | 51% |
+
+**PN-TC-1 and CONTROLFIELD both show an unambiguous, strong "flagged =
+genuinely fainter/lower-SNR" pattern** -- flagged sources are 3-4x fainter
+and have 4x lower formal SNR than clean sources in both fields
+independently. This directly supports explanation (1) for these two
+fields: the flag is catching real marginal detections, not being
+over-tight.
+
+**NGC-602 shows the OPPOSITE pattern** -- flagged sources are brighter,
+higher-SNR, and *less* often near another a0 star (by the existing
+`qc_crowded_source` metric) than clean ones. This doesn't fit either of the
+two original hypotheses cleanly, so it was investigated further rather
+than left as noise: printing raw pixel cutouts around the 4 brightest
+flagged NGC-602 sources showed the brightest one (obs=3.15e-3 Jy, by far
+the brightest source measured in any of the three fields) has a visibly
+non-clean, mildly asymmetric core in its 15x15 px cutout -- consistent
+with either an unresolved companion/blend (plausible in a dense young
+cluster, where mass segregation puts the brightest members in the most
+crowded sub-regions -- a real effect the existing `qc_crowded_source`
+metric, keyed to *other a0 stars* rather than PSF morphology, would not
+necessarily catch) or the MIRI F770W/F560W "cruciform" PSF-modeling gap
+already noted in this file's APCORR search (2026-07-21, "known to be
+incomplete... ~3% additional uncertainty") becoming more prominent for
+bright sources specifically. **Not conclusively distinguished between
+these two mechanisms** -- both are plausible and not mutually exclusive --
+but importantly, PN-TC-1's own brightest star (1.91e-3 Jy) sits at
+rel_diff=0.181, just under the 0.2 threshold, consistent with (not
+disproving) a similar bright-source effect being present but weaker there.
+
+**Decisive check: is the population "just above threshold" (rel_diff in
+[0.20, 0.30), n=94, 85 from NGC-602) a genuinely marginal population, or
+clean/high-SNR sources caught on a technicality?** Its median SNR (38.5) is
+much closer to the clearly-bad population's (rel_diff >= 0.50: SNR 26.7)
+than to the clearly-clean population's (rel_diff < 0.10: SNR 133.5) -- a
+>3x gap from "clean." **No evidence of a cluster of otherwise-healthy,
+high-SNR sources sitting just over the cutoff.** The rel_diff distribution
+across all three fields combined is a smooth, continuously-decaying
+long tail, not bimodal -- consistent with a graded, photon-noise/
+photometric-complexity-driven continuum (expected astrophysically), not a
+population artificially split by an arbitrary cutoff.
+
+**Conclusion: no evidence supports retuning `rel_frac` (0.2), and it was
+NOT changed.** The evidence points to explanation (1) -- the flag is
+catching a real, field-dependent marginal/complex-photometry population --
+with a nuance not anticipated by either original hypothesis: "marginal"
+has (at least) two distinct real drivers, not one. Faintness/low-SNR
+dominates in PN-TC-1 and CONTROLFIELD; bright-source photometric
+complexity (possible blending or cruciform-related PSF mismatch,
+unresolved) dominates NGC-602's high rate instead. The ~38% combined rate
+is a real, now-measured statistic (worth keeping for the methods section,
+per the researcher's framing) rather than an artifact to engineer away.
+**Caveat on the SNR metric used throughout this analysis:** it's
+`|observed_flux| / observed_flux_err`, where `observed_flux_err` is only
+`photutils.psf.PSFPhotometry`'s formal (photon-noise) fit uncertainty --
+it does NOT capture systematics like background structure or blending, so
+it's a weak/incomplete proxy for "how marginal is this detection" and its
+failure to cleanly separate flagged/clean in NGC-602 is not strong evidence
+against a genuine-difficulty explanation there; the direct pixel-level
+brightness/crowding evidence is more informative for that field.
+
+**Not done here, flagged as a follow-on if the NGC-602 mechanism ever needs
+to be pinned down precisely:** distinguishing blending from a cruciform PSF
+gap would need either a higher-resolution look at whether the asymmetry is
+compact (blend) or diffuse/plus-shaped (cruciform), or cross-checking
+against `_cat.ecsv`'s own `is_extended`/`sharpness` columns for these
+specific sources -- not required to resolve the retuning question this
+investigation was scoped to answer, so not pursued further now.
+
+### 2026-07-21 -- `qc_psf_aperture_disagreement` split into `qc_psf_disagreement_faint`/`_complex`
+
+The three-field investigation above found `qc_psf_aperture_disagreement`
+was catching two physically distinct populations under one flag: a
+faint/low-SNR marginal-detection population (dominant in PN-TC-1 and
+CONTROLFIELD) and a bright/high-SNR population where photon noise cannot
+explain the disagreement (concentrated in NGC-602's dense cluster). Since
+these have different implications for a downstream reader (a sensitivity
+limit vs. real PSF complexity/a possible unresolved companion) and matter
+differently for excess.py's YSO-field candidates specifically, split the
+flag rather than leaving a future analysis to re-derive the distinction.
+
+**Implementation** (`pipeline/miri_photometry.py:classify_disagreement`):
+per disagreeing star, compute `SNR = |observed_flux| / observed_flux_err`
+(`photutils.psf.PSFPhotometry`'s own formal, photon-noise-only fit
+uncertainty) and split on `miri_photometry.disagreement.snr_threshold`
+(new config key, default 50.0):
+- `qc_psf_disagreement_faint`: SNR below threshold.
+- `qc_psf_disagreement_complex`: SNR at/above threshold, OR SNR itself
+  isn't computable (zero/NaN `observed_flux_err`) -- an uncomputable SNR
+  errs toward "needs a closer look," not toward silently assuming
+  noise-limited.
+- `qc_psf_aperture_disagreement` is unchanged (kept for backward
+  compatibility as a general caution flag) -- it is exactly the logical OR
+  of the two new sub-flags, verified as an invariant (see below).
+
+**`snr_threshold=50.0` is a stated compromise, not a precisely derived
+boundary** -- same status as `rel_frac`/`abs_floor_jy` above. It's grounded
+in two real numbers from the investigation, not picked arbitrarily:
+PN-TC-1's entire flagged population (independently confirmed faint-driven
+by consistently lower flux/SNR than that field's own clean sources) topped
+out at SNR=29.2; the real complex-driver example that motivated this split
+in the first place -- NGC-602's brightest source, which still disagreed by
+36% despite being the brightest source measured across all three fields --
+had SNR=1425. 50.0 sits comfortably below that 1425 and only modestly above
+29.2, but the exact value in between has no principled derivation and
+should be revisited if a future field's data suggests it's drawing the
+line in the wrong place.
+
+**Verification:** re-ran the real PN-TC-1 chain end-to-end (fresh
+retriever.py -> miri_photometry.py, not reusing cached mosaics) after the
+change. Checked three invariants hold on the live output for both bands:
+(1) `qc_psf_aperture_disagreement == OR(faint, complex)` for all 40 stars,
+(2) `faint` and `complex` are never both set, (3) neither sub-flag is ever
+set when the parent flag is 0. All held. As expected from the
+investigation (PN-TC-1's flagged population was independently confirmed
+purely faint-driven, max SNR 29.2), **all 23 flagged stars (14 F770W + 9
+F1000W) classified as `qc_psf_disagreement_faint`, zero as `_complex`** --
+consistent with, not just assumed from, the field-level finding above.
+
+**Docs updated to match:** `config/pipeline_config.yaml` (new
+`snr_threshold` key, with the same grounding numbers restated inline);
+`config/quality_config.yaml` (added entries for every `miri_photometry`
+qc_* flag -- this file had not been updated when the module was
+implemented earlier in the day, so `qc_no_mosaic_for_filter`,
+`qc_source_off_mosaic`, `qc_saturated`, `qc_crowded_source`, and
+`qc_psf_fit_failed` are now documented there for the first time alongside
+the two new split flags, closing that gap rather than leaving it wider);
+`pipeline/miri_photometry.py`'s module docstring. Also corrected a
+pre-existing inaccuracy noticed while touching this docstring/config:
+`qc_crowded_source` was documented as checking only Gaia-matched a0 stars,
+but retriever.py's pivot keeps non-Gaia-matched detections as singleton a0
+rows too, so the check already covers all of a0's population -- the docs
+undersold what the flag actually does; fixed in both
+`pipeline/miri_photometry.py` and `config/pipeline_config.yaml`.
+
+**Status:** `pipeline/miri_photometry.py` stage is complete --
+`excess.py` can now consume `observed_flux_{band}`, and its precision can
+be discriminated per-source via `qc_psf_disagreement_faint`/`_complex`
+without re-deriving this investigation.

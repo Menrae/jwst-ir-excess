@@ -132,6 +132,76 @@ photosphere:
       - "Proplyds"
       - "Circumstellar disks"
 
+# --- MIRI photometry extraction stage (pipeline/miri_photometry.py) ---
+# RESOLVED 2026-07-21 (see RESEARCH_CONTEXT.md Decision Log): model-PSF
+# fitting (stpsf + photutils.psf.PSFPhotometry) is the PRIMARY observed-flux
+# measurement, with careful aperture photometry as a parallel cross-check.
+# Both are corrected to "infinite aperture" equivalent using the SAME row
+# (same aperture radius, sky annulus, and apcorr multiplier) from the JWST
+# pipeline's own CRDS APCORR reference file -- the same file the pipeline's
+# source_catalog step uses internally to produce _cat.ecsv's aper_total_flux.
+# Confirmed via an exact numerical round-trip against real archive data
+# (aper70_flux * apcorr(0.7) == aper_total_flux to 4 sig figs).
+miri_photometry:
+  # Which APCORR table row (EE fraction) defines the aperture radius used
+  # for BOTH the PSF-fit stamp/local-background-subtraction geometry AND
+  # the aperture cross-check -- 0.7 is the value confirmed 2026-07-21 to
+  # exactly reproduce _cat.ecsv's aper_total_flux when multiplied by its
+  # own apcorr value for a real test star. Not independently re-derived for
+  # other EE fractions; revisit only if 0.7 turns out to behave poorly for
+  # some filter/subarray not yet tested.
+  target_ee_fraction: 0.7
+  apcorr:
+    # Pinned to a specific CRDS reference file version rather than queried
+    # live via CRDS's JSON-RPC API at runtime -- same philosophy as
+    # photosphere.py's FIT_BAND_ZEROPOINT_JY (avoids a live per-run
+    # dependency on an API that has only been smoke-tested once, not
+    # load-tested for pipeline-scale reliability). Confirmed live
+    # 2026-07-21 to be CRDS's current best reference for MIR_IMAGE via
+    # get_best_references against the live operational context
+    # (jwst_1535.pmap) -- if CRDS publishes a newer MIR_IMAGE apcorr
+    # reference later, this pin will silently go stale; revisit by
+    # re-running the same get_best_references check, not by assuming this
+    # is still current indefinitely.
+    reference_filename: "jwst_miri_apcorr_0014.fits"
+    url: "https://jwst-crds.stsci.edu/unchecked_get/references/jwst/jwst_miri_apcorr_0014.fits"
+    cache_dir: "data/crds_cache"
+    subarray: "FULL"
+  # Extra margin (pixels) added beyond the EE-aperture radius when sizing
+  # the PSF-fit stamp / fit_shape, so the fit has some working room beyond
+  # the exact EE-defining radius. A stated compromise, not derived --
+  # same status as photosphere.py's DEFAULT_MAG_ERR.
+  fov_margin_px: 2
+  crowding:
+    # qc_crowded_source fires if another a0 star (in the same mosaic) falls
+    # within this pixel separation -- a stated compromise, not derived;
+    # KNOWN SIMPLIFICATION: checks against other a0 stars only (Gaia-matched
+    # or not -- retriever.py's pivot keeps unmatched detections as singleton
+    # a0 rows too), not every raw MIRI detection outside a0's population.
+    min_separation_px: 20.0
+  disagreement:
+    # qc_psf_aperture_disagreement threshold: |psf_flux - aperture_flux| >
+    # max(abs_floor_jy, rel_frac * |psf_flux|) -- same abs_floor/rel_frac
+    # pattern as photosphere.py's qc_grid_disagreement. Stated compromise,
+    # not derived. RE-EXAMINED 2026-07-21 against 3 real fields (PN-TC-1,
+    # CONTROLFIELD, NGC-602; see RESEARCH_CONTEXT.md): disagreement rate
+    # varies 15-69% by field, tracking field character rather than
+    # indicating a miscalibrated threshold -- rel_frac was NOT changed as a
+    # result of that investigation.
+    abs_floor_jy: 1.0e-6
+    rel_frac: 0.2
+    # Splits qc_psf_aperture_disagreement into qc_psf_disagreement_faint
+    # (SNR below this) vs qc_psf_disagreement_complex (SNR at/above this,
+    # or uncomputable) -- see classify_disagreement in miri_photometry.py
+    # and RESEARCH_CONTEXT.md (2026-07-21) for the full derivation. A
+    # stated compromise grounded in real data, not a precisely derived
+    # boundary: PN-TC-1's entire (independently confirmed faint-driven)
+    # flagged population topped out at SNR=29.2, while the real
+    # complex-driver example that motivated this split (NGC-602's
+    # brightest source) had SNR=1425 -- two orders of magnitude apart, with
+    # the exact cutoff in between not rigorously derived.
+    snr_threshold: 50.0
+
 # --- Excess scoring stage (pipeline/excess.py) ---
 excess:
   primary_bands:

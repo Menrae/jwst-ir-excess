@@ -26,6 +26,13 @@ expecto>=0.1     # PHOENIX (Husser et al. 2013) grid access
 dustmaps>=1.0    # Bayestar19 3D dust map (extinction)
 dust_extinction>=1.4  # G23 (Gordon et al. 2023) reddening law
 
+# MIRI photometry extraction (pipeline/miri_photometry.py) -- model-PSF
+# fitting + aperture cross-check, both corrected via the CRDS apcorr
+# reference file. Smoke-tested live 2026-07-20/21, see RESEARCH_CONTEXT.md.
+photutils>=3.0   # PSFPhotometry, ImagePSF, aperture photometry
+stpsf>=2.2       # MIRI model PSF generation (renamed from webbpsf); auto-
+                 # downloads its own ~129 MB reference data on first use
+
 # Plotting
 matplotlib>=3.8
 
