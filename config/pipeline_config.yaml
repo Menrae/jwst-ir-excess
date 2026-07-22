@@ -203,13 +203,83 @@ miri_photometry:
     snr_threshold: 50.0
 
 # --- Excess scoring stage (pipeline/excess.py) ---
+# RESOLVED 2026-07-22 (see RESEARCH_CONTEXT.md Decision Log): excess_sigma_{band}
+# ((observed-predicted)/combined_err) is computed unconditionally. The literature
+# check (Carrigan 2009; Griffith et al. 2015) found neither paper applies a
+# Bonferroni/FDR-style multiple-testing correction to their published method --
+# both instead cut on a physically-motivated or categorical criterion, then
+# manually vet every surviving source individually. A real survivor-count check
+# against three already-live-tested archive fields (PN-TC-1, CONTROLFIELD,
+# NGC-602) confirmed the pooled survivor count is nearly flat from 3-sigma to
+# 5-sigma (real signal in that data sits far above any of these cuts, up to
+# sigma=168.6) -- so a stricter cut buys no discriminating power there, only
+# risk of losing a real but modest candidate.
 excess:
   primary_bands:
     - F770W
     - F1000W
-  # TODO: define excess significance threshold (e.g. sigma above photosphere
-  # prediction) once photometric uncertainty budget is understood.
-  significance_threshold_sigma: null
+  # SET 2026-07-22 (researcher's decision). This is a TRIAGE CUT chosen to
+  # produce a reviewable shortlist consistent with precedent practice
+  # (Carrigan 2009; Griffith et al. 2015) -- it is explicitly NOT a
+  # look-elsewhere/Bonferroni-corrected statistical significance claim, and
+  # must never be described as one in any writeup. Required in BOTH bands
+  # simultaneously for a star with qc_single_filter_detection==0 (neither
+  # "either band" nor "single band alone" is used as the primary criterion).
+  # The real filtering step this project relies on is the disqualifying qc_*
+  # flags (pipeline.excess.DISQUALIFYING_STAR_FLAGS/DISQUALIFYING_BAND_FLAGS)
+  # plus manual review of every survivor, not fine-grained statistical
+  # discrimination from the sigma cut itself -- consistent with both
+  # precedent papers' own wide-net-then-vet philosophy.
+  significance_threshold_sigma: 3.0
+  # STILL NOT SET (researcher's design, 2026-07-22): must be a genuinely
+  # separate, stricter value for qc_single_filter_detection==1 stars (only one
+  # MIRI band was ever measured, so they don't get the dual-band cross-check
+  # that gives the primary criterion above its -- already modest -- statistical
+  # credibility). NOT simply significance_threshold_sigma scaled down. These
+  # stars get their own qc_single_band_candidate marker once this is set,
+  # rather than being silently included at the two-band bar or silently
+  # excluded from candidacy entirely.
+  single_band_significance_threshold_sigma: null
+  # STOPGAP (added 2026-07-22, see pipeline/excess.py module docstring and
+  # RESEARCH_CONTEXT.md Decision Log): the survivor-count check above found
+  # that ALL 5 real survivors across all three test fields had a
+  # target_classification already indicating a conventional astrophysical
+  # explanation for genuine mid-IR excess ("Stellar Cluster; Young star
+  # clusters" or "Star; Planetary nebulae nuclei") -- and that fixing just
+  # these two gaps (neither caught by any existing flag, including
+  # photosphere.py's qc_pms_veiling_risk) would have caught all 5. These token
+  # lists are a NARROW, SESSION-VERIFIED set (exact strings actually observed
+  # live against the MAST archive during that check) -- NOT a systematic
+  # vocabulary sweep like retriever.py's STELLAR_TARGET_CLASSIFICATIONS
+  # allowlist, and NOT a substitute for pipeline/contaminants.py's eventual
+  # proper catalogue cross-matching (qc_evolved_star, etc.), which will
+  # supersede this. Matched via exact semicolon-separated-component match
+  # (pipeline.excess._classification_matches), same convention as
+  # photosphere.py's is_pms_veiling_risk/is_white_dwarf.
+  #
+  # REFINEMENT (2026-07-22): target_classification is a MAST field/observation-
+  # level tag, identical for every star in a pointing (confirmed empirically),
+  # so a blanket match disqualifies the whole field, not just the actual
+  # contaminant. is_stopgap_evolved_star (evolved_star token list below) was
+  # first refined to also check photosphere_teff against grids.hot_teff_min_k
+  # (genuine planetary-nebula nuclei are far hotter than that boundary, so a
+  # star with a real, cooler fitted Teff was exonerated -- verified: all 12
+  # real PN-TC-1 stars with a fit came back 4500-9000 K), THEN RETIRED
+  # ENTIRELY once pipeline/contaminants.py's proper qc_evolved_star existed
+  # and was verified (2026-07-22 -- see RESEARCH_CONTEXT.md Decision Log).
+  # The evolved_star token list below is gone; only young_cluster remains.
+  # is_stopgap_young_cluster was NOT given an analogous refinement -- Gaia
+  # parallax/PM consistency against the field's own population was checked
+  # and found NOT safe to ship naively (parallax has ~no discriminating
+  # power for genuine members of an SMC-distance cluster like NGC-602, and
+  # CONTROLFIELD's own Gaia-matched sample shows no single dominant
+  # PM/parallax clump to check against) -- logged as an explicit, accepted
+  # blind spot in RESEARCH_CONTEXT.md, not fixed here. This remains active
+  # (contaminants.py has no young-cluster/PMS-association category yet).
+  stopgap_contaminant_tokens:
+    young_cluster:
+      - "Young star clusters"
+      - "Stellar Cluster"
 
 # --- Contaminant classification stage (pipeline/contaminants.py) ---
 contaminants:
@@ -220,9 +290,94 @@ contaminants:
     - photometric_artifact
     - known_variable
     - unresolved_binary
-  # TODO: identify specific reference catalogues for each category
-  # (e.g. debris disk catalogues, variable star catalogues) before
-  # implementing contaminants.py.
+  # TODO: identify specific reference catalogues for debris_disk (Kennedy &
+  # Wyatt 2013 confirmed 2026-07-22 NOT usable -- see RESEARCH_CONTEXT.md
+  # Decision Log) and photometric_artifact (needs Level 2 _cal.fits DQ
+  # arrays + per-source WCS remapping, see contaminants.py module docstring)
+  # before either can be implemented -- Tier 3, still blocked.
+  # GAP (noted 2026-07-22, not resolved here): there is currently no
+  # "young stellar object / PMS cluster association" category in this list at
+  # all, despite excess.py's stopgap_contaminant_tokens.young_cluster above
+  # showing this is a real, non-rare contaminant population in this project's
+  # own test data. Worth adding as a seventh category (or folding into
+  # agb_or_evolved_giant's proper cross-match design) when contaminants.py is
+  # actually designed.
+  #
+  # IMPLEMENTED 2026-07-22 (Tiers 1 and 2 of the priority ordering, see
+  # RESEARCH_CONTEXT.md Decision Log): qc_evolved_star (this section),
+  # qc_background_galaxy (needs no config -- reuses a0's existing
+  # is_extended_{band} directly), qc_known_variable (needs no config --
+  # queries gaiadr3.vari_summary directly, see contaminants.py), and
+  # qc_binary_companion_contamination (needs no config -- a deliberate
+  # passthrough of the already-implemented qc_possible_binary, not new
+  # logic; see Decision Log Question 1). All four run over the FULL b1
+  # population, not just excess-showing candidates.
+  evolved_star:
+    # qc_evolved_star fires when a star's Gaia-parallax-based absolute G
+    # magnitude is brighter than the expected main-sequence value at its own
+    # fitted Teff (pipeline.contaminants.expected_ms_abs_g) by more than this
+    # many magnitudes -- a stated compromise, not a derived threshold, same
+    # status as this project's other abs_floor/rel_frac-style thresholds.
+    # 2.5 mag corresponds to roughly 10x the expected main-sequence
+    # luminosity at that Teff -- a substantial, not-explainable-by-
+    # measurement-error overluminosity typical of subgiants/giants.
+    # Extinction is NOT applied when computing absolute G magnitude (see
+    # pipeline/contaminants.py module docstring for why that's a
+    # deliberate, directionally-safe simplification, not an oversight).
+    overluminosity_mag_threshold: 2.5
+    # ADDED mid-implementation 2026-07-22, after a real PN-TC-1 run surfaced
+    # several faint, distant sources (fractional parallax error up to 165%)
+    # getting flagged as "overluminous" purely from parallax noise --
+    # inverting a low-S/N parallax to get a distance is a well-known bias
+    # that systematically manufactures apparent overluminosity for
+    # intrinsically ordinary stars. parallax/parallax_error must meet this
+    # bar before a derived distance/magnitude is trusted at all; a
+    # commonly-used convention in Gaia-based work (parallax S/N >= 5, i.e.
+    # fractional error <= 20%), same status as photosphere.py's RUWE>1.4
+    # threshold (a standard convention, not independently re-derived here).
+    min_parallax_over_error: 5.0
+
+  # IMPLEMENTED 2026-07-22 (first Tier-3 item, see RESEARCH_CONTEXT.md
+  # Decision Log for the time-boxed catalog search): qc_debris_disk_prime /
+  # qc_debris_disk_reserved, position cross-match against Cotten & Song
+  # (2016), ApJS 225, 15, "A Comprehensive Census of Nearby Infrared Excess
+  # Stars" (VizieR J/ApJS/225/15) -- table3 ("Prime", 505 stars,
+  # higher-confidence) and table4 ("Reserved", 1257 stars, lower-
+  # confidence), kept as TWO SEPARATE flags (researcher's decision), same
+  # pattern as miri_photometry.py's qc_psf_disagreement_faint/_complex
+  # split -- both disqualifying for now, but distinguishable so the
+  # Reserved tier's strictness can be reconsidered later without
+  # redesigning the flag. Kennedy & Wyatt (2013), the originally-cited
+  # source, was ruled out the same day (confirmed via its own abstract to
+  # be a luminosity-function/demographic study, not a per-star catalogue).
+  debris_disk:
+    # STATED COMPROMISE, not derived -- same status as retriever.py's
+    # 2MASS crossmatch radius. Deliberately more generous than this
+    # project's Gaia-MIRI (0.25") or Gaia-2MASS (0.5") radii: Cotten &
+    # Song's positions come from Tycho-2 (epoch ~1991) x AllWISE, with NO
+    # per-star proper motion available to propagate forward to our stars'
+    # Gaia epoch (2016.0) -- unlike the Gaia-2MASS crossmatch, which DOES
+    # propagate epochs. qc_ambiguous_debris_disk_match is the mechanism
+    # relied on to surface where this compromise breaks down, same role it
+    # plays in retriever.py's own crossmatches.
+    crossmatch_radius_arcsec: 2.0
+
+  # IMPLEMENTED 2026-07-22 (Milky Way half of the young-cluster/PMS gap --
+  # see excess.py's qc_stopgap_young_cluster and RESEARCH_CONTEXT.md's Tier
+  # 3 sequencing entry): qc_cluster_member_confirmed / qc_confirmed_field_star,
+  # cross-matched by gaia_source_id (not position) against Cantat-Gaudin
+  # et al. (2020), A&A 640, A1 (VizieR J/A+A/640/A1, "nodup" members table)
+  # -- a Gaia-based Milky Way open-cluster membership catalogue. Explicitly
+  # does NOT cover the extragalactic half (e.g. NGC-602/SMC) -- that remains
+  # genuinely open, no catalogue identified.
+  cluster_membership:
+    # Same convention/value as evolved_star.min_parallax_over_error (a
+    # standard Gaia-work S/N convention, not independently re-derived) --
+    # but here it does double duty: it also structurally prevents this
+    # check from ever exonerating a genuinely extragalactic star (see
+    # pipeline/contaminants.py module docstring for the verified reasoning,
+    # not just an assumption).
+    min_parallax_over_error: 5.0
 
 # --- Output stage (pipeline/output.py) ---
 output:

@@ -546,13 +546,46 @@ def pivot_to_one_row_per_star(sources: Table, filters: list[str]) -> Table:
 # --- Assembly and output -----------------------------------------------------
 
 
+def _coerce_object_column_for_netcdf(name: str, arr: np.ndarray) -> np.ndarray:
+    """netCDF4 has no native bool dtype. A `_cat.ecsv`-derived column that
+    mixes masked/missing values with Python bool (e.g. `is_extended`) is
+    dtype=object here -- np.asarray succeeds either way, but
+    Dataset.to_netcdf later raises "unsupported dtype for netCDF4
+    variable: bool" if EVERY star happens to have a real True/False value
+    (no missing entries to dilute the array's resolved dtype away from
+    pure bool). Confirmed live (2026-07-22, GD153 -- a small field where
+    every star's is_extended_{band} was determined) that this reproduces
+    reliably and had never been caught before because PN-TC-1/
+    CONTROLFIELD/NGC-602's own samples each happened to have at least one
+    star missing a value in every such column -- a works-by-luck case, not
+    a verified-safe one. Fixed generically (any bool-valued object column,
+    not hardcoded to is_extended specifically): cast to float64
+    (1.0/0.0/NaN), matching how contaminants.py's
+    compute_background_galaxy_flag already reads this exact column
+    (`np.isfinite(vals) & (vals != 0)`)."""
+    if arr.dtype != object:
+        return arr
+    non_null = [v for v in arr if v is not None and not (isinstance(v, float) and np.isnan(v))]
+    if non_null and all(isinstance(v, (bool, np.bool_)) for v in non_null):
+        return np.array(
+            [np.nan if (v is None or (isinstance(v, float) and np.isnan(v))) else float(v) for v in arr],
+            dtype=float,
+        )
+    return arr
+
+
 def assemble_level_a0(star_table: Table, config: dict, filters: list[str]) -> xr.Dataset:
     """Pack the pivoted star-level table into an xarray.Dataset (data level
     a0), one row per star (see pivot_to_one_row_per_star). String columns
-    are cast explicitly since NetCDF has no native string type; units are
-    recorded as variable attrs rather than embedded in column names."""
+    are cast explicitly since NetCDF has no native string type; bool-valued
+    object columns are coerced to float (see _coerce_object_column_for_netcdf);
+    units are recorded as variable attrs rather than embedded in column
+    names."""
     ds = xr.Dataset(
-        data_vars={name: ("star", np.asarray(star_table[name])) for name in star_table.colnames},
+        data_vars={
+            name: ("star", _coerce_object_column_for_netcdf(name, np.asarray(star_table[name])))
+            for name in star_table.colnames
+        },
         coords={"star": star_table["star_row_id"].data},
     )
     for f in filters:

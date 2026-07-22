@@ -153,48 +153,395 @@ qc_variables:
 
   qc_debris_disk_candidate:
     stage: contaminants
+    status: SPLIT 2026-07-22
     description: >
-      Flags sources cross-matched against known/candidate debris disk
-      catalogues (see Jura 2003; Kennedy & Wyatt 2013).
-    # TODO: pick specific reference catalogue(s) to cross-match against.
+      SPLIT into qc_debris_disk_prime / qc_debris_disk_reserved (see their
+      own entries below) once implemented -- Kennedy & Wyatt (2013) was
+      confirmed (via its own abstract, not just the citation-table
+      annotation) to be a luminosity-function/demographic study, NOT a
+      usable per-star cross-match catalogue; Jura (2003) was already
+      flagged as white-dwarf-specific (2026-07-15), not appropriate for
+      this main-sequence-star framework either. Neither citation is used.
+      Kept here (rather than deleted) only so this file's own history
+      stays legible.
+    # This name/entry no longer maps to a single implemented flag -- see
+    # qc_debris_disk_prime/qc_debris_disk_reserved below.
+
+  qc_debris_disk_prime:
+    stage: contaminants
+    description: >
+      Position cross-match (contaminants.debris_disk.crossmatch_radius_arcsec,
+      config/pipeline_config.yaml, 2.0" -- a stated compromise given no
+      per-star proper motion is available to epoch-propagate this catalogue's
+      positions) against Cotten & Song (2016), ApJS 225, 15, "A Comprehensive
+      Census of Nearby Infrared Excess Stars," VizieR table3 -- 505
+      higher-confidence ("Prime") named IR-excess/debris-disk candidate
+      stars. IMPLEMENTED 2026-07-22
+      (pipeline.contaminants.fetch_debris_disk_catalog +
+      crossmatch_debris_disk_catalog). Found via a time-boxed catalog
+      search (budget: 5 candidates, resolved in 2 -- see RESEARCH_CONTEXT.md
+      Decision Log) after Kennedy & Wyatt (2013) was ruled out and SIMBAD's
+      own object-type vocabulary was confirmed (live) to have no
+      debris-disk-specific entry at all.
+    # Added 2026-07-22 alongside pipeline/contaminants.py (first Tier-3 item).
+
+  qc_debris_disk_reserved:
+    stage: contaminants
+    description: >
+      Same mechanism as qc_debris_disk_prime, cross-matched instead against
+      Cotten & Song (2016)'s table4 -- 1257 LOWER-confidence ("Reserved")
+      candidate stars. Kept as a SEPARATE flag from qc_debris_disk_prime
+      (researcher's decision, 2026-07-22, same pattern as
+      miri_photometry.py's qc_psf_disagreement_faint/_complex split) --
+      both are disqualifying for now, but distinguishable, so a match
+      against a well-vetted Prime source and a match against a
+      lower-confidence Reserved source are never silently treated as
+      equally strong disqualifications, and the Reserved tier's strictness
+      can be reconsidered later at archive scale without redesigning the
+      flag.
+    # Added 2026-07-22 alongside pipeline/contaminants.py (first Tier-3 item).
+
+  qc_ambiguous_debris_disk_match:
+    stage: contaminants
+    description: >
+      Star-level: True if MORE THAN ONE Cotten & Song (2016) entry (Prime
+      or Reserved) falls within the crossmatch radius of a star -- same
+      convention as retriever.py's qc_ambiguous_gaia_match/
+      qc_ambiguous_2mass_match. The mechanism relied on to surface where
+      the crossmatch_radius_arcsec compromise (2.0", chosen generously
+      because this catalogue's positions cannot be epoch-propagated)
+      breaks down, rather than silently resolving to a single "closest"
+      match. Not itself disqualifying -- purely diagnostic.
+    # Added 2026-07-22 alongside pipeline/contaminants.py.
+
+  qc_cluster_member_confirmed:
+    stage: contaminants
+    description: >
+      Star-level: True if gaia_source_id is found in Cantat-Gaudin et al.
+      (2020), A&A 640, A1's open-cluster membership catalogue (VizieR
+      J/A+A/640/A1, "nodup" members table -- ~2000 Milky Way open clusters,
+      keyed by Gaia DR2 source_id, with per-star membership probability).
+      A genuine, specific disqualifying signal in its own right -- stronger
+      evidence than excess.py's coarse, field-wide qc_stopgap_young_cluster
+      -- and feeds qc_contaminant_flagged_partial. The Milky Way half of
+      the young-cluster/PMS gap identified 2026-07-22; the extragalactic
+      half (e.g. NGC-602/SMC) remains unaddressed, no catalogue identified.
+      Queried via VizieR's TAP service with a targeted source_id IN (...)
+      clause (the full table is too large to bulk-download). KNOWN
+      LIMITATION: this catalogue is keyed by Gaia DR2 source_id while this
+      project's own gaia_source_id is Gaia DR3 -- the two agree for the
+      large majority of sources but this has not been independently
+      verified for every source in this project's own sample.
+    # Added 2026-07-22 alongside pipeline/contaminants.py.
+
+  qc_confirmed_field_star:
+    stage: contaminants
+    description: >
+      Star-level: POSITIVE evidence (not a contaminant flag, NOT included
+      in qc_contaminant_flagged_partial) that a star is an ordinary
+      Galactic field interloper rather than a genuine cluster/association
+      member -- True only if (1) parallax/parallax_error clears
+      contaminants.cluster_membership.min_parallax_over_error (5.0, same
+      convention as qc_evolved_star's gate) AND (2) the star is NOT found
+      in Cantat-Gaudin et al. (2020)'s membership catalogue. Used
+      exclusively to construct the qc_*_refined columns (see their own
+      entries below), which override excess.py's qc_stopgap_young_cluster
+      where this positive evidence exists -- does not by itself change any
+      b1-level flag. The parallax S/N gate also structurally prevents this
+      from ever exonerating a genuinely extragalactic star (e.g. an
+      NGC-602/SMC member, whose true parallax sits ~20x below Gaia's
+      precision floor at that distance) without needing an explicit
+      distance cut -- verified, not assumed; see
+      pipeline/contaminants.py module docstring.
+    # Added 2026-07-22 alongside pipeline/contaminants.py.
+
+  qc_excess_clean_refined:
+    stage: contaminants
+    description: >
+      Per-band (qc_excess_clean_refined_<band>): an ADDITIVE, parallel
+      recomputation of excess.py's own qc_excess_clean_<band>, identical in
+      every respect except excess.py's qc_stopgap_young_cluster is excluded
+      from the star-level disqualifying set wherever qc_confirmed_field_star
+      is True. Every other b1-level disqualifying reason still applies
+      unchanged. Does NOT modify qc_excess_clean_<band> itself (b1's own
+      column, carried through unmodified) -- this is a separate,
+      clearly-named parallel view, precisely because contaminants.py's own
+      convention is to never mutate a column an earlier stage already
+      produced. See qc_excess_significant_refined_<band> and
+      qc_candidate_preliminary_refined for the significance/candidate-level
+      versions built on top of this.
+    # Added 2026-07-22 alongside pipeline/contaminants.py.
+
+  qc_excess_significant_refined:
+    stage: contaminants
+    description: >
+      Per-band (qc_excess_significant_refined_<band>):
+      qc_excess_clean_refined_<band>==True AND excess_sigma_<band> >=
+      excess.significance_threshold_sigma -- the refined analog of
+      qc_excess_significant_<band>, only computed once that threshold is
+      set (same gating as the original).
+    # Added 2026-07-22 alongside pipeline/contaminants.py.
+
+  qc_candidate_preliminary_refined:
+    stage: contaminants
+    description: >
+      Star-level: the refined analog of excess.py's qc_candidate_preliminary
+      -- qc_single_filter_detection==False AND
+      qc_excess_significant_refined_<band>==True for every configured
+      primary band. Only computed once excess.significance_threshold_sigma
+      is set. This is the column that shows the concrete, quantified effect
+      of the Milky Way cluster-membership fix on which stars would be
+      called candidates.
+    # Added 2026-07-22 alongside pipeline/contaminants.py.
 
   qc_background_galaxy:
     stage: contaminants
     description: >
-      Flags sources whose morphology or colors are inconsistent with a
-      point-source stellar photosphere (likely misidentified background
-      galaxy).
-    # TODO: define morphological/color criteria.
+      Flags sources whose morphology is inconsistent with a point-source
+      stellar photosphere (likely misidentified background galaxy, though
+      also catches blends/nebulae/artifacts -- see caveat below).
+      IMPLEMENTED 2026-07-22 (pipeline.contaminants.compute_background_galaxy_flag):
+      reuses a0's is_extended_{band} (the pipeline's own automated
+      source_catalog morphology classification, already fetched by
+      retriever.py, previously unused) -- True in ANY measured band. No new
+      archive query needed. Deliberately coarse for this first pass: "extended"
+      doesn't distinguish a genuine background galaxy from a blend, real
+      nebula, or artifact (the same non-specific signal that independently
+      corroborated a qc_psf_fit_failed case for PN-TC-1's real extended
+      source, 2026-07-21) -- supporting evidence, not a validated galaxy
+      classifier. a0 also carries sharpness_{band}/roundness_{band}/
+      ellipticity_{band}/semimajor_sigma_{band}, unused here, which could
+      refine this in a later pass. Computed over the FULL b1 population
+      (researcher's decision, 2026-07-22), not just excess-showing candidates.
+    # Added 2026-07-22 alongside pipeline/contaminants.py (Tier 1 of the
+    # priority ordering, see RESEARCH_CONTEXT.md Decision Log).
 
   qc_evolved_star:
     stage: contaminants
     description: >
       Flags AGB stars / evolved giants, which are intrinsically mid-IR
-      bright and not evidence of a megastructure.
-    # TODO: define selection (e.g. color-cuts, Gaia photogeometric
-    # luminosity/temperature placement on HR diagram).
+      bright and not evidence of a megastructure. IMPLEMENTED 2026-07-22
+      (pipeline.contaminants.is_evolved_star_overluminous): standard
+      HR-diagram giant/dwarf discriminator -- a star is flagged if its
+      Gaia-parallax-based absolute G magnitude is brighter than the
+      expected main-sequence value at its own fitted photosphere_teff (see
+      contaminants.evolved_star.overluminosity_mag_threshold,
+      config/pipeline_config.yaml) by more than a stated-compromise
+      threshold (2.5 mag, ~10x luminosity). No new archive query needed --
+      Gaia parallax/phot_g_mean_mag (a0) and photosphere_teff (already
+      carried through b1) are already in hand. Properly supersedes
+      excess.py's is_stopgap_evolved_star Teff-only proxy (that stopgap was
+      NOT relaxed/removed as part of this change -- left as a redundant
+      safety net pending a decision on whether to retire it). Extinction is
+      NOT applied to the absolute-magnitude calculation -- a deliberate,
+      directionally-safe simplification (under-flags reddened giants rather
+      than over-flagging), not an oversight; see pipeline/contaminants.py
+      module docstring. Computed over the FULL b1 population, not just
+      excess-showing candidates.
+    # Added 2026-07-22 alongside pipeline/contaminants.py (Tier 1 of the
+    # priority ordering, see RESEARCH_CONTEXT.md Decision Log). Directly
+    # validated against real PN-TC-1 data before being prioritized: all 12
+    # real Teff fits sharing that field's blanket "Planetary nebulae
+    # nuclei" tag came back cool (4500-9000 K), exactly what this check is
+    # designed to catch as NOT overluminous/evolved.
+
+  qc_contaminant_flagged_partial:
+    stage: contaminants
+    description: >
+      Star-level composite: OR of every contaminant qc_* flag implemented
+      SO FAR (currently qc_evolved_star, qc_background_galaxy,
+      qc_known_variable, qc_binary_companion_contamination,
+      qc_debris_disk_prime, qc_debris_disk_reserved, qc_cluster_member_confirmed
+      -- Tiers 1, 2, and the first two Tier-3 items). qc_confirmed_field_star
+      is deliberately EXCLUDED -- it is positive exonerating evidence, not
+      a contaminant flag (see its own entry and qc_excess_clean_refined_<band>).
+      Explicitly named/documented as partial -- must NEVER be mistaken for
+      the final qc_anomalous_excess, which needs all six planned contaminant
+      categories (one not yet implemented -- qc_photometric_artifact --
+      plus the young-cluster/PMS extragalactic half, see
+      config/pipeline_config.yaml contaminants.categories TODOs and
+      RESEARCH_CONTEXT.md's Tier 3 sequencing entry).
+    # Added 2026-07-22 alongside pipeline/contaminants.py.
 
   qc_known_variable:
     stage: contaminants
     description: >
-      Flags sources cross-matched against known variable star catalogues,
-      where phase-dependent IR emission could mimic excess.
-    # TODO: choose variable star catalogue(s) for cross-match.
+      Flags sources cross-matched against Gaia DR3's own variability
+      pipeline output (gaiadr3.vari_summary), where phase-dependent IR
+      emission could mimic excess. IMPLEMENTED 2026-07-22
+      (pipeline.contaminants.query_gaia_variability +
+      compute_known_variable_flag): existence in gaiadr3.vari_summary
+      (any of its in_vari_* categories -- eclipsing binary, long-period
+      variable, rotation modulation, etc.) is sufficient to flag, regardless
+      of which specific type. Confirmed live/queryable 2026-07-22, same
+      Gaia TAP service retriever.py already uses, keyed by the same
+      gaia_source_id already in hand -- no new archive, but this IS a live
+      network call (the first one in contaminants.py; kept separate from
+      the pure per-star flag logic so unit tests stay network-free). A
+      single bulk query over the population being checked, not scaled
+      beyond a modest source list -- see pipeline/contaminants.py module
+      docstring for the archive-scale caveat. Computed over the FULL b1
+      population, not just excess-showing candidates.
+    # Added 2026-07-22 alongside pipeline/contaminants.py (Tier 2 of the
+    # priority ordering, see RESEARCH_CONTEXT.md Decision Log).
 
   qc_binary_companion_contamination:
     stage: contaminants
     description: >
       Flags sources with a known/suspected binary companion that could
-      contribute mid-IR flux (e.g. Gaia non-single-star flag).
-    # TODO: confirm which Gaia DR3 non-single-star indicators are reliable
-    # enough to use for this flag.
+      contribute mid-IR flux. IMPLEMENTED 2026-07-22
+      (pipeline.contaminants.compute_binary_companion_contamination_flag)
+      as a deliberate PASSTHROUGH of the already-implemented
+      qc_possible_binary (photosphere.py: Gaia RUWE>1.4 OR nonzero
+      non_single_star, carried through b1) -- NOT new detection logic.
+      Checked live 2026-07-22 against 500 real confirmed-orbit Gaia NSS
+      binaries: 0/500 had non_single_star==0 (the existing flag misses
+      nothing an NSS orbit solution would catch), and 249/500 had RUWE<=1.4
+      (confirming non_single_star is doing real, necessary work in the
+      existing OR, not redundant). The marginal value found in the NSS
+      orbit tables themselves (a companion-luminosity-ratio refinement,
+      g_luminosity_ratio, populated for only ~22% of an already-narrow
+      subset) was judged too thin to justify a second, parallel
+      binary-detection mechanism -- see RESEARCH_CONTEXT.md Decision Log,
+      Question 1, for the full investigation.
+    # Added 2026-07-22 alongside pipeline/contaminants.py (Tier 2 of the
+    # priority ordering, see RESEARCH_CONTEXT.md Decision Log).
 
   qc_low_snr:
     stage: excess
     description: >
       Flags sources where MIRI photometric SNR is too low for the excess
       measurement to be trusted.
-    # TODO: define SNR threshold.
+    # TODO: define SNR threshold. Not yet implemented in pipeline/excess.py --
+    # distinct from qc_psf_disagreement_faint_{band} (miri_photometry.py),
+    # which is specifically about PSF-vs-aperture disagreement explained by
+    # low SNR, not a standalone SNR floor on observed_flux itself.
+
+  qc_star_disqualified:
+    stage: excess
+    description: >
+      Star-level composite: boolean OR of every qc_* flag in
+      pipeline.excess.DISQUALIFYING_STAR_FLAGS (qc_ambiguous_gaia_match,
+      qc_no_photosphere_grid, qc_poor_photosphere_fit, qc_possible_binary,
+      qc_pms_veiling_risk, qc_rj_extrapolated, qc_stopgap_young_cluster) --
+      reasoning for each flag's disqualifying-vs-caveat-only categorization
+      is in the module docstring and RESEARCH_CONTEXT.md (2026-07-22
+      Decision Log). Set regardless of band; a disqualified star cannot
+      produce a clean candidate in any band. (qc_stopgap_evolved_star was
+      part of this list 2026-07-22 through later the same day, then
+      retired -- see its own entry below.)
+    # Added 2026-07-22 alongside pipeline/excess.py. Updated same day to add
+    # the stopgap flag(s) below; qc_stopgap_evolved_star removed again the
+    # same day once contaminants.py's qc_evolved_star superseded it.
+
+  qc_stopgap_young_cluster:
+    stage: excess
+    description: >
+      STOPGAP (see pipeline/excess.py module docstring): target_classification
+      exact-component match against excess.stopgap_contaminant_tokens.young_cluster
+      (config/pipeline_config.yaml) -- a narrow, session-verified token list
+      ("Young star clusters", "Stellar Cluster"), NOT a systematic vocabulary
+      sweep. Added because a real survivor-count check (2026-07-22, see
+      RESEARCH_CONTEXT.md) found young-cluster-classified stars slipping
+      through qc_pms_veiling_risk's own (differently-scoped) token list
+      entirely undetected, and accounted for several of that check's real
+      survivors. Distinct from qc_pms_veiling_risk: that flag is about
+      near-IR veiling biasing the photosphere fit's own input bands; this
+      flag is about the excess measurement itself having a mundane,
+      conventional (disk/accretion) explanation regardless of fit quality.
+      Will be superseded by pipeline/contaminants.py's proper catalogue
+      cross-matching -- note there is currently no dedicated "young stellar
+      object / PMS cluster association" category in contaminants.categories
+      at all (see config/pipeline_config.yaml TODO).
+
+      NOT refined with a per-star discriminator (unlike qc_stopgap_evolved_star)
+      after checking whether Gaia parallax/proper-motion consistency against
+      the field's own population could serve the same role: found NOT safe
+      to ship naively, since (1) parallax has ~no discriminating power for
+      genuine members of an SMC-distance cluster like NGC-602 (expected
+      member parallax ~0.016 mas, far below Gaia's precision floor for these
+      faint sources) and (2) CONTROLFIELD's own Gaia-matched sample shows no
+      single dominant proper-motion/parallax clump to check against at all.
+      This remains a field-wide (not per-star) stopgap -- a known, accepted
+      blind spot that risks silently shrinking/biasing this project's
+      null-result sample, not just candidate detection, since genuinely
+      uncontaminated field interlopers sharing a young-cluster-classified
+      pointing are exactly the useful null-result population this stopgap
+      incidentally discards. See RESEARCH_CONTEXT.md Decision Log for the
+      full investigation.
+    # Added 2026-07-22 alongside pipeline/excess.py. Blind-spot investigation
+    # (parallax/PM) logged same day -- not refined.
+
+  qc_stopgap_evolved_star:
+    stage: excess
+    status: RETIRED 2026-07-22
+    description: >
+      RETIRED (2026-07-22, same day it was added and refined -- see
+      RESEARCH_CONTEXT.md Decision Log for the full history). Was a
+      target_classification-based stopgap (Teff-refined) for planetary-
+      nebula-nucleus classifications, ahead of pipeline/contaminants.py's
+      proper implementation. Superseded by qc_evolved_star (stage:
+      contaminants -- HR-diagram overluminosity-for-Teff, parallax-S/N-
+      gated) once that was implemented and verified the same day. No
+      longer computed anywhere in the pipeline -- `pipeline.excess` no
+      longer defines `is_stopgap_evolved_star`. Kept here (rather than
+      deleted) only so this file's own history stays legible; do not
+      expect this column in any b1/b2 output going forward.
+    # Retired 2026-07-22. Was added and Teff-refined earlier the same day.
+
+  qc_band_disqualified:
+    stage: excess
+    description: >
+      Per-band (qc_band_disqualified_<band>): boolean OR of every
+      qc_*_<band> flag in pipeline.excess.DISQUALIFYING_BAND_FLAGS
+      (qc_no_mosaic_for_filter, qc_source_off_mosaic, qc_saturated,
+      qc_crowded_source, qc_psf_fit_failed, qc_psf_disagreement_complex --
+      all suffixed by band). Deliberately excludes
+      qc_psf_aperture_disagreement_<band> (superseded by the faint/complex
+      split) and qc_psf_disagreement_faint_<band> (photon-noise-explained
+      disagreement is already reflected in a larger observed_flux_<band>_err,
+      so it doesn't need a separate gate).
+    # Added 2026-07-22 alongside pipeline/excess.py.
+
+  qc_excess_clean:
+    stage: excess
+    description: >
+      Per-band (qc_excess_clean_<band>): NOT qc_star_disqualified AND NOT
+      qc_band_disqualified_<band> -- i.e. this band's excess_sigma_<band> is
+      trustworthy enough to be considered for candidacy, independent of
+      whether it is actually significant.
+    # Added 2026-07-22 alongside pipeline/excess.py.
+
+  qc_excess_significant:
+    stage: excess
+    description: >
+      Per-band (qc_excess_significant_<band>): qc_excess_clean_<band>==True
+      AND excess_sigma_<band> >= excess.significance_threshold_sigma
+      (config/pipeline_config.yaml, set to 3.0 on 2026-07-22). This threshold
+      is a TRIAGE CUT for a manually-vetted shortlist, chosen to be
+      consistent with precedent practice (Carrigan 2009; Griffith et al.
+      2015 -- neither paper applies a look-elsewhere/Bonferroni correction to
+      their published method either) -- it is explicitly NOT a corrected
+      statistical significance claim, and must never be described as one.
+      See pipeline/excess.py module docstring and RESEARCH_CONTEXT.md
+      (2026-07-22 Decision Log) for the full survivor-count evidence behind
+      this choice.
+    # Added 2026-07-22 alongside pipeline/excess.py.
+
+  qc_candidate_preliminary:
+    stage: excess
+    description: >
+      Star-level: qc_single_filter_detection==False AND
+      qc_excess_significant_<band>==True for EVERY configured primary band
+      (both F770W and F1000W, currently) -- the primary, both-bands-required
+      candidate tier. Single-band-only stars (qc_single_filter_detection==
+      True) are deliberately excluded here regardless of their one band's
+      significance -- they get their own, separate, stricter
+      qc_single_band_candidate tier instead (not yet computed --
+      excess.single_band_significance_threshold_sigma is still null). This
+      is "preliminary" because it does not yet include contaminants.py's six
+      contaminant flags -- see qc_anomalous_excess below.
+    # Added 2026-07-22 alongside pipeline/excess.py.
 
   qc_poor_photosphere_fit:
     stage: photosphere
@@ -310,3 +657,15 @@ anomaly_flag:
     excess AND qc_photometric_artifact == False AND all other contaminant
     flags == False. This is the flag that defines pipeline "candidates."
     Must never be set based on excess significance alone.
+  # STILL NOT COMPUTED as of 2026-07-22 (see RESEARCH_CONTEXT.md Decision Log
+  # and pipeline/excess.py module docstring), though progress since the note
+  # below was first written: significance_threshold_sigma is now set (3.0,
+  # a triage-cut choice informed by the Carrigan 2009/Griffith et al. 2015
+  # literature check and a real survivor-count check -- see Decision Log),
+  # so qc_excess_significant_<band>/qc_candidate_preliminary ARE now computed.
+  # What's still blocking qc_anomalous_excess itself: (1)
+  # single_band_significance_threshold_sigma is still null (qc_single_band_
+  # candidate not yet computed); (2) qc_photometric_artifact and the other
+  # five contaminant flags below are all stage: contaminants, and
+  # pipeline/contaminants.py doesn't exist yet -- excess.py runs before it,
+  # not the reverse (see Decision Log).
