@@ -589,6 +589,16 @@ def assemble_level_a0(star_table: Table, config: dict, filters: list[str]) -> xr
         coords={"star": star_table["star_row_id"].data},
     )
     for f in filters:
+        # A field with detections in only SOME of the configured filters
+        # (confirmed real, not hypothetical: -BET-PIC and
+        # NGC-1266-BACKGROUND, both F770W-only with zero F1000W
+        # observations -- 2026-07-22 trial batch) never gets
+        # miri_ra_{f}/miri_dec_{f} columns for the missing filter at all --
+        # pivot_to_one_row_per_star's unstack("filter") only creates
+        # columns for filters actually present in the input rows. Guard
+        # rather than assume every configured filter has a column.
+        if f"miri_ra_{f}" not in ds.data_vars:
+            continue
         ds[f"miri_ra_{f}"].attrs["units"] = "deg"
         ds[f"miri_dec_{f}"].attrs["units"] = "deg"
     ds["gaia_ra"].attrs["units"] = "deg"

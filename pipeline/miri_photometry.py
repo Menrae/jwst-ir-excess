@@ -531,11 +531,23 @@ def build_neighbor_index(a0_ds: xr.Dataset, filt: str, mosaic_cache: dict) -> di
     extract_flux_for_filter's qc_crowded_source check. Built once per
     filter per run, not per star, to avoid re-deriving pixel positions for
     every star in a shared field."""
+    index: dict[str, list] = {}
+    if f"miri_ra_{filt}" not in a0_ds.data_vars:
+        # A field with zero detections in this filter (confirmed real:
+        # -BET-PIC/NGC-1266-BACKGROUND are F770W-only -- see
+        # RESEARCH_CONTEXT.md 2026-07-22) has no miri_ra_{filt}/
+        # miri_dec_{filt}/mosaic_path_{filt} columns at all, not just
+        # NaN-filled ones. extract_flux_for_filter's own row.get(...,
+        # np.nan) already degrades gracefully per-star (returns
+        # qc_no_mosaic_for_filter=1); this function needs the same
+        # degradation since it indexes a0_ds directly rather than a
+        # per-row dict.
+        return index
+
     ra = a0_ds[f"miri_ra_{filt}"].values
     dec = a0_ds[f"miri_dec_{filt}"].values
     mosaic_path = a0_ds[f"mosaic_path_{filt}"].values
 
-    index: dict[str, list] = {}
     for i in range(len(ra)):
         if not (np.isfinite(ra[i]) and np.isfinite(dec[i])):
             continue

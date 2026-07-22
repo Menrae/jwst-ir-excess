@@ -3299,6 +3299,233 @@ in the background. Results (per-field timing/memory/disk, the aggregate
 category-flag distribution, and any further bugs) to be reported and
 logged once complete.
 
+### 2026-07-22 -- 15-field trial batch: results, a real single-band-field bug found and fixed, memory discrepancy investigated and cleared
+
+The batch above completed: 13/15 fields succeeded, 2 failed cleanly with
+the same root cause. Reported here in full, plus the fix, the memory
+investigation the researcher asked to be done explicitly rather than
+assumed, and the final 15/15 re-run.
+
+**Runtime, corrected with real measurements, not the pre-run estimate:**
+the batch attempt (all 15 fields, including the 2 that errored partway
+through) took **1248.46s (~20.8 min) wall-clock**, not the ~3-3.5 hours
+estimated beforehand. The estimate was wrong because it extrapolated
+from CONTROLFIELD's 33s/star as a typical cost, when it is closer to a
+worst case: `fit_star`'s own early-exit logic (`pipeline/photosphere.py`,
+`n_available_bands < 2` and the white-dwarf branch) skips the expensive
+Kurucz/PHOENIX grid fit entirely for any star lacking at least 2 usable
+photometric bands or classified as a white dwarf -- neither case needs
+`qc_no_photosphere_grid`-style grid selection, just an instant NaN fill.
+Checked directly against the real a1 outputs for all 13 successful
+fields (233 stars): only **5/233 stars (2.1%)** ever triggered a real
+per-star grid fit; 40/233 (17.2%) were white dwarfs (instant skip);
+the remaining 188/233 (80.7%) lacked 2 usable bands (instant skip,
+almost always no clean Gaia match). CONTROLFIELD -- the field the
+per-star estimate was based on -- happens to be an atypically
+fit-heavy field where all 20 stars had adequate photometry; most of the
+archive-wide sample does not look like that. This matches the live
+GD153 smoke-test observation already logged above (photosphere
+finishing in under a second) -- confirmed here at full batch scale
+rather than from one field's smoke test.
+
+**Aggregate category-flag distribution (13 fields, 233 stars), from the
+real `b2.nc` outputs, not estimated:**
+
+| | count | rate |
+|---|---|---|
+| `qc_star_disqualified` | 231/233 | 99.1% |
+| `qc_candidate_preliminary` (dual-band) | 0 | 0% |
+| `qc_single_filter_detection` | 230/233 | 98.7% |
+| `qc_contaminant_flagged_partial` | 39/233 | 16.7% |
+| `qc_poor_photosphere_fit` | 190/233 | 81.5% |
+| `qc_extinction_uncertain` | 188/233 | 80.7% |
+| `qc_no_photosphere_grid` (white dwarf) | 40/233 | 17.2% |
+| `qc_background_galaxy` | 38/233 | 16.3% |
+| `qc_stopgap_young_cluster` | 20/233 | 8.6% |
+
+**Zero survivors, same headline finding as the original 3-field check**
+(2026-07-22, "Threshold set to 3.0" entry: 80/80 stars disqualified,
+0/80 `qc_candidate_preliminary`), but not quite as absolute this time:
+2/233 stars are NOT `qc_star_disqualified` (both in HD55677 --
+Gaia 3167200388352639232 and 3167212139383161216), the first real
+non-disqualified stars this project's real-data checks have ever
+produced. Neither is a candidate: each is `qc_excess_clean` in only
+ONE band (`qc_single_filter_detection`/band-level disqualification in
+the other), so neither gets the dual-band cross-check
+`qc_candidate_preliminary` requires -- checked directly (excess_sigma
+-2.72 and -24.9 in their respective clean bands, both consistent with
+non-excess, not even individually a marginal case). Consistent with,
+not a contradiction of, the 3-field zero-survivor result: the archive
+sample is large enough to finally surface single-band-clean stars that
+the smaller curated 3-field sample never happened to contain, and this
+pipeline's own design (per the researcher's 2026-07-22 decision, logged
+above) deliberately withholds candidate status from single-band-only
+detections rather than relaxing the criterion for them.
+
+**A real bug, caught by the run itself, not a smoke test this time --
+both failures had the identical cause:** `-BET-PIC` and
+`NGC-1266-BACKGROUND` both crashed with
+`KeyError: "No variable named 'miri_ra_F1000W'"` inside
+`assemble_level_a0`. **Root cause:** both fields are genuinely
+**F770W-only** -- confirmed directly (`load_miri_catalog_sources`'s own
+`filter` column has exactly one value, `F770W`, for every source in
+both fields; zero F1000W observations exist for either target in MAST,
+not a download or cross-match failure). `pivot_to_one_row_per_star`'s
+`unstack("filter")` correctly builds `miri_ra_{f}`/`miri_dec_{f}`
+columns only for filters actually present in the input rows -- so a
+single-band field never gets `miri_ra_F1000W`/`miri_dec_F1000W` columns
+at all, not NaN-filled ones. `assemble_level_a0` (`pipeline/retriever.py`)
+didn't know that: its per-filter units-attrs loop unconditionally
+iterated over `config`'s full configured filter list
+(`["F770W", "F1000W"]`) and indexed `ds[f"miri_ra_{f}"]` directly,
+assuming every configured filter always has a column. This had never
+been hit before because every field used in this project's real-data
+checks so far (PN-TC-1, CONTROLFIELD, NGC-602, and by implication all
+13 of this batch's other fields) happens to have at least some F1000W
+coverage.
+
+**The same bug pattern was found a second time by inspection before it
+could cause a second crash:** `build_neighbor_index`
+(`pipeline/miri_photometry.py`) has the identical assumption --
+`a0_ds[f"miri_ra_{filt}"].values` indexed directly, one call per
+configured filter, for every field. Unlike
+`extract_flux_for_filter` (same module), which already degrades
+gracefully via `row.get(f"miri_ra_{filt}", np.nan)` on a per-row dict
+(returns `qc_no_mosaic_for_filter=1}` cleanly), `build_neighbor_index`
+indexes the `xr.Dataset` directly and would have crashed with the same
+`KeyError` on the very next stage once `assemble_level_a0` was fixed.
+Caught and fixed proactively, not by running into it.
+
+**Fix, in both functions, same pattern -- skip filters with no column
+rather than assuming universal coverage:**
+```python
+# retriever.py, assemble_level_a0
+for f in filters:
+    if f"miri_ra_{f}" not in ds.data_vars:
+        continue
+    ds[f"miri_ra_{f}"].attrs["units"] = "deg"
+    ds[f"miri_dec_{f}"].attrs["units"] = "deg"
+
+# miri_photometry.py, build_neighbor_index
+if f"miri_ra_{filt}" not in a0_ds.data_vars:
+    return index  # empty -- every star gets qc_no_mosaic_for_filter=1
+```
+Not hardcoded to F1000W or to these two fields -- generic to any filter
+genuinely absent from a field, matching the fix philosophy already
+established for the GD153 bool-dtype bug earlier this stage.
+
+**Verified against both fields specifically, with real MAST data (cached
+from the original run, not re-downloaded):** re-ran retriever through
+`miri_photometry` for both `-BET-PIC` (432 uncapped detections) and
+`NGC-1266-BACKGROUND` (58 uncapped detections) in isolation first, ahead
+of the full official re-run below. Both assembled `a0` cleanly with only
+`miri_ra_F770W`/`miri_dec_F770W` present (no `F1000W` columns, confirmed
+absent, not NaN-filled), and `miri_photometry` ran to completion with
+`qc_no_mosaic_for_filter_F1000W == 1` for all stars in both fields, as
+expected. **Regression check against the three original fields and the
+13 already-succeeded trial-batch fields:** all 13 fields that succeeded
+under the old buggy code necessarily have both filters' columns present
+(the old code would have crashed identically on any single-band field,
+with no exception) -- so the new guard is a structural no-op for every
+one of them, and for PN-TC-1/CONTROLFIELD/NGC-602. Confirmed empirically
+too: the existing regression tests (`test_assemble_level_a0_handles_*`,
+which exercise both F770W and F1000W columns together) still pass
+unchanged. Full suite: 137 tests pass (136 -> 137; one new test,
+`test_assemble_level_a0_handles_field_with_only_one_band_present`,
+added to `tests/test_retriever.py` -- the single-band-only case that
+module didn't have a test for, per the researcher's request).
+
+**Memory discrepancy investigated as its own question, per the
+researcher's explicit ask -- not assumed benign:** the original batch
+report showed peak RSS climbing from ~410 MB to **3901.3-3985.6 MB**
+over the run, well above the ~2.3 GB seen in an earlier isolated single
+`photosphere.run()` call. Two things needed to be distinguished:
+legitimate reference-data residency (fine) vs. a real per-field leak
+(a genuine problem at archive scale). **Method:** (1) inspected the
+batch report's own RSS-vs-stage trace field by field -- `ru_maxrss` is
+a monotonic high-water mark for the whole process, so it cannot fall,
+but a true leak should still show it climbing indefinitely as more
+fields are processed, while bounded caching should plateau. (2) read
+the caching architecture directly: `photosphere.py`'s `_bayestar_query`
+is a module-level singleton (loaded once, `global` keyword, never
+cleared); `_get_bandpass` and `miri_photometry.py`'s
+`_get_miri_psf_template` are both `@lru_cache(maxsize=None)`; Kurucz
+grid reads go through `stsynphot`'s own internal grid-file caching;
+PHOENIX reads go through `expecto`'s `cache=True`. All four are
+"load once per distinct value ever requested, keep forever" by
+design -- correct behavior for expensive reference data, not a leak,
+*if* the set of distinct values requested is bounded. By contrast,
+`miri_photometry.py`'s `mosaic_cache` (raw `_i2d` FITS arrays) is a
+fresh local dict per field, explicitly closed via `close_mosaic_cache`
+at the end of `assemble_miri_photometry` -- correctly field-scoped, not
+part of the persistent set. (3) **a controlled, real, in-process test**
+(not just reasoning from the architecture): ran `photosphere.run()` on
+CONTROLFIELD, then a different field (NGC-602), then re-ran
+CONTROLFIELD again, then NGC-602 again, all four calls in the same
+process. Results: start 178.8 MB -> after CONTROLFIELD 624.1 MB -> after
+NGC-602 2762.4 MB -> after CONTROLFIELD **re-run, same 2 stars, 2762.4 MB
+(+0)** -> after NGC-602 **re-run, same 2 stars, 2762.4 MB (+0)**. Repeating
+identical work added exactly zero additional memory; only a genuinely
+*new* field (new Teff values, touching Kurucz/PHOENIX grid nodes not
+yet cached) grew RSS at all. This is the direct evidence the
+architecture read predicted: growth is bounded by the diversity of
+distinct grid nodes/dust-map queries touched, not by the number of
+fields or stars processed. It also explains the original batch's own
+trace precisely: RSS was exactly flat for the 6 fields before any real
+photosphere fit ran, jumped once at `2M0359+2009-B` (the first field
+with a real fit, 130.7s), stayed flat for `VI-CYG-1`, jumped again
+(smaller) at `HD55677` (the second and last field with real fits,
+172.1s), then stayed flat for all 5 remaining fields including
+`NGC-346` (2154 raw detections) and `M31-LRN-2015` (1458) -- exactly
+the two step-jumps predicted by "only 5/233 stars ever ran a real fit,
+both jumps line up with those two fields," not a smooth per-field
+climb. **Conclusion, high confidence:** the ~3.9 GB figure is expected
+steady-state reference-data residency (Bayestar dust map + touched
+Kurucz/PHOENIX grid nodes + stpsf PSF templates), not a per-field leak.
+The ~2.3 GB isolated-run figure undercounts simply because it only ever
+touched one field's worth of distinct Teff values; a real archive-scale
+run touching more distinct stellar types would plateau higher than
+3.9 GB but still boundedly, capped by the finite size of the reference
+grids themselves -- worth remembering as a real (bounded) memory
+budget line item at full archive scale, not a bug to fix.
+
+**Re-ran `-BET-PIC` and `NGC-1266-BACKGROUND` through the full official
+chain** (retriever through `output.py`, same instrumentation as the
+original batch script, same `trial_batch` directory/report so the batch
+record is now a complete 15/15 rather than a separate throwaway run):
+both completed with zero errors. `-BET-PIC`: 432 uncapped detections
+(capped to 20), 46.84s total. `NGC-1266-BACKGROUND`: 58 uncapped
+detections (capped to 20), 10.70s total -- both fast, benefiting from
+the original run's cached MAST downloads and (consistent with the
+runtime finding above) no real photosphere fits triggered in either
+field.
+
+**Full 15-field, 273-star aggregate**, folding these two in:
+
+| | count | rate |
+|---|---|---|
+| `qc_star_disqualified` | 271/273 | 99.3% |
+| `qc_candidate_preliminary` (dual-band) | 0 | 0% |
+| `qc_single_filter_detection` | 270/273 | 98.9% |
+| `qc_contaminant_flagged_partial` | 47/273 | 17.2% |
+
+All 40 newly-added stars (20 capped from each of the two fields) are
+`qc_star_disqualified` -- both fields are F770W-only, so every star
+carries `qc_no_mosaic_for_filter_F1000W`/related single-band
+disqualifications; the 2 non-disqualified HD55677 stars found above
+remain the only exceptions across the full batch. **Zero candidates,
+confirmed at the full 15-field/273-star scale** -- the same outcome as
+the original 3-field (80-star) and 13-field (233-star) checks, not a
+new result on its own, but now resting on real data from every field
+this trial batch was scoped to cover.
+
+**Status:** 15-field trial batch is now fully complete and logged
+(15/15, zero unresolved errors), the single-band-field bug is fixed in
+both places it existed and covered by a new regression test, and the
+memory discrepancy is resolved as expected behavior, not a bug, with
+real controlled evidence rather than an assumption. 137 tests pass
+project-wide.
+
 ## Deferred to Future Work (consolidated as of 2026-07-22)
 
 Everything below is scattered across individual Decision Log entries
@@ -3423,13 +3650,19 @@ prerequisite.
     gap since 2026-07-20. Fine for the dozens-of-stars samples used
     throughout this project's real-data checks; would take hours-to-days
     at the full archive's ~1000+ stellar-classified observations.
-16. **The full pipeline has never been run at archive scale** -- every
-    real-data verification in this project (retriever.py through
-    contaminants.py) has used the same handful of fields (PN-TC-1 in full;
-    CONTROLFIELD/NGC-602 as labeled 20-star subsamples). All per-field
-    survivor counts and contaminant-flag rates in this log are explicitly
-    NOT archive-wide statistics -- see the positive-control caveat
-    (2026-07-22) for the clearest statement of this limitation.
+16. **The full pipeline has not been run at FULL archive scale.**
+    Updated 2026-07-22: a moderate-scale trial (15 fields, 273 capped
+    stars, stratified for code-path/category coverage -- see the
+    dedicated Decision Log entry) has now been run end-to-end with zero
+    unresolved errors, one order of magnitude beyond the earlier
+    3-field/80-star checks. This is real progress on this item, not a
+    resolution of it: 273 stars is still well short of the archive's
+    ~1000+ stellar-classified observations, and the 15 fields were
+    chosen for category diversity, not to be a representative random
+    sample -- survivor counts and contaminant-flag rates from either the
+    3-field or 15-field checks remain explicitly NOT archive-wide
+    statistics. See the positive-control caveat (2026-07-22) for the
+    clearest statement of this limitation.
 17. **`pipeline/output.py` is still a complete stub** -- FITS catalogue,
     diagnostic figures, and LaTeX table export are all unwritten.
 18. **retriever.py's "first detection kept, not best-SNR" simplification**

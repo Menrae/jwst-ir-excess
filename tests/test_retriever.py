@@ -72,3 +72,32 @@ def test_assemble_level_a0_handles_all_nan_is_extended(tmp_path):
     star_table = _minimal_star_table([np.nan, np.nan])
     ds = assemble_level_a0(star_table, CONFIG, ["F770W", "F1000W"])
     ds.to_netcdf(tmp_path / "a0.nc")  # must not raise
+
+
+def test_assemble_level_a0_handles_field_with_only_one_band_present():
+    # Regression test for the real 2026-07-22 trial-batch bug: a field
+    # with detections in only ONE of the configured filters (confirmed
+    # real: -BET-PIC and NGC-1266-BACKGROUND, both F770W-only with zero
+    # F1000W observations) never gets miri_ra_F1000W/miri_dec_F1000W
+    # columns at all -- pivot_to_one_row_per_star's unstack("filter")
+    # only creates columns for filters actually present in the input.
+    # This used to crash with KeyError: 'miri_ra_F1000W' inside
+    # assemble_level_a0's per-filter units-attrs loop.
+    n = 2
+    star_table = Table(
+        {
+            "star_row_id": np.arange(n),
+            "star_id": np.arange(100, 100 + n),
+            "gaia_ra": np.full(n, 10.0),
+            "gaia_dec": np.full(n, 20.0),
+            "gaia_pmra": np.zeros(n),
+            "gaia_pmdec": np.zeros(n),
+            "gaia_parallax": np.ones(n),
+            "miri_ra_F770W": np.full(n, 10.0),
+            "miri_dec_F770W": np.full(n, 20.0),
+            "is_extended_F770W": np.array([True, False], dtype=object),
+        }
+    )
+    ds = assemble_level_a0(star_table, CONFIG, ["F770W", "F1000W"])  # must not raise
+    assert "miri_ra_F1000W" not in ds.data_vars
+    assert ds["miri_ra_F770W"].attrs["units"] == "deg"
