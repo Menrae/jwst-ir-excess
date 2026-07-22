@@ -39,6 +39,65 @@ CONFIG_WITH_THRESHOLD = {
     "photosphere": {"grids": {"hot_teff_min_k": 8000.0}},
 }
 
+CONFIG_WITH_SINGLE_BAND_THRESHOLD = {
+    "excess": {
+        "primary_bands": ["F770W", "F1000W"],
+        "significance_threshold_sigma": 3.0,
+        "single_band_significance_threshold_sigma": 5.0,
+        "stopgap_contaminant_tokens": STOPGAP_TOKENS,
+    },
+    "photosphere": {"grids": {"hot_teff_min_k": 8000.0}},
+}
+
+
+def _single_band_f770w_dataset(sigma_f770w_observed, sigma_f770w_err=0.1, predicted=1.0, predicted_err=0.1):
+    """A single, realistic single-filter-detection star: F1000W genuinely
+    absent (qc_no_mosaic_for_filter_F1000W=1, NaN flux -- matching how a
+    real single-band-only field looks, not just qc_single_filter_detection
+    set with both bands populated), F770W otherwise clean."""
+    a0 = _dataset(
+        1,
+        star_id=[1],
+        gaia_source_id=[1],
+        target_classification=["Star"],
+        qc_single_filter_detection=[1],
+    )
+    a1 = _dataset(
+        1,
+        star_id=[1],
+        predicted_flux_F770W=[predicted],
+        predicted_flux_F770W_err=[predicted_err],
+        predicted_flux_F1000W=[np.nan],
+        predicted_flux_F1000W_err=[np.nan],
+        qc_ambiguous_gaia_match=[0],
+        qc_no_photosphere_grid=[0],
+        qc_poor_photosphere_fit=[0],
+        qc_possible_binary=[0],
+        qc_pms_veiling_risk=[0],
+        qc_rj_extrapolated=[0],
+    )
+    miri = _dataset(
+        1,
+        star_id=[1],
+        observed_flux_F770W=[sigma_f770w_observed],
+        observed_flux_F770W_err=[sigma_f770w_err],
+        observed_flux_F1000W=[np.nan],
+        observed_flux_F1000W_err=[np.nan],
+        qc_no_mosaic_for_filter_F770W=[0],
+        qc_source_off_mosaic_F770W=[0],
+        qc_saturated_F770W=[0],
+        qc_crowded_source_F770W=[0],
+        qc_psf_fit_failed_F770W=[0],
+        qc_psf_disagreement_complex_F770W=[0],
+        qc_no_mosaic_for_filter_F1000W=[1],
+        qc_source_off_mosaic_F1000W=[0],
+        qc_saturated_F1000W=[0],
+        qc_crowded_source_F1000W=[0],
+        qc_psf_fit_failed_F1000W=[0],
+        qc_psf_disagreement_complex_F1000W=[0],
+    )
+    return a0, a1, miri
+
 
 def _dataset(n, **data_vars):
     coords = {"star": np.arange(n)}
@@ -372,7 +431,11 @@ def test_assemble_level_b1_computes_significant_and_preliminary_when_threshold_s
     )
     assert "qc_excess_significant_F770W" in ds
     assert "qc_candidate_preliminary" in ds
-    # qc_single_band_candidate/qc_anomalous_excess remain unimplemented regardless.
+    # qc_single_band_candidate is gated on its OWN threshold
+    # (single_band_significance_threshold_sigma), still None in this
+    # config -- so it's absent here even though significance_threshold_sigma
+    # is set. qc_anomalous_excess is unimplemented regardless (needs
+    # contaminants.py).
     assert "qc_single_band_candidate" not in ds
     assert "qc_anomalous_excess" not in ds
 
@@ -452,6 +515,57 @@ def test_qc_candidate_preliminary_excludes_single_filter_detection_stars():
     assert ds["qc_excess_significant_F770W"].values[0] == 1
     assert ds["qc_excess_significant_F1000W"].values[0] == 1
     assert ds["qc_candidate_preliminary"].values[0] == 0
+
+
+# --- qc_single_band_candidate (single_band_significance_threshold_sigma=5.0) --
+
+
+def test_qc_single_band_candidate_absent_when_threshold_null():
+    ds = ex.assemble_level_b1(
+        _synthetic_a0(), _synthetic_a1(), _synthetic_miri(), CONFIG_WITH_THRESHOLD
+    )
+    assert "qc_single_band_candidate" not in ds
+
+
+def test_qc_single_band_candidate_fires_above_the_stricter_5sigma_bar():
+    # observed=1.8485, predicted=1.0, err=0.1 each -> sigma = 0.8485/sqrt(0.02) = 6.0
+    a0, a1, miri = _single_band_f770w_dataset(sigma_f770w_observed=1.8485)
+    ds = ex.assemble_level_b1(a0, a1, miri, CONFIG_WITH_SINGLE_BAND_THRESHOLD)
+    assert ds["excess_sigma_F770W"].values[0] == pytest.approx(6.0, abs=0.01)
+    assert ds["qc_single_band_candidate"].values[0] == 1
+
+
+def test_qc_single_band_candidate_is_genuinely_stricter_not_the_dual_band_bar_scaled_down():
+    # observed=1.5657, predicted=1.0, err=0.1 each -> sigma = 0.5657/sqrt(0.02) ~= 4.0:
+    # clears the 3.0 dual-band bar but NOT the 5.0 single-band bar. This is the
+    # core requirement from the researcher's design: single-band significance
+    # must be judged against its own, stricter threshold, not the primary one.
+    a0, a1, miri = _single_band_f770w_dataset(sigma_f770w_observed=1.5657)
+    ds = ex.assemble_level_b1(a0, a1, miri, CONFIG_WITH_SINGLE_BAND_THRESHOLD)
+    assert ds["excess_sigma_F770W"].values[0] == pytest.approx(4.0, abs=0.01)
+    assert ds["qc_excess_significant_F770W"].values[0] == 1  # clears 3.0
+    assert ds["qc_single_band_candidate"].values[0] == 0  # does not clear 5.0
+
+
+def test_qc_single_band_candidate_requires_star_to_be_clean():
+    a0, a1, miri = _single_band_f770w_dataset(sigma_f770w_observed=10.0)
+    a1["qc_poor_photosphere_fit"] = ("star", np.array([1]))
+    ds = ex.assemble_level_b1(a0, a1, miri, CONFIG_WITH_SINGLE_BAND_THRESHOLD)
+    assert ds["qc_star_disqualified"].values[0] == 1
+    assert ds["qc_single_band_candidate"].values[0] == 0
+
+
+def test_qc_single_band_candidate_excludes_dual_band_stars_even_if_one_band_is_huge():
+    # A dual-band star (qc_single_filter_detection=0) with a huge F770W
+    # sigma but a non-significant F1000W -- this correctly fails
+    # qc_candidate_preliminary (needs both bands), and must NOT leak into
+    # qc_single_band_candidate either: that tier is only for stars that were
+    # genuinely never measured in the second band.
+    ds = ex.assemble_level_b1(
+        _synthetic_a0(), _synthetic_a1(), _synthetic_miri(), CONFIG_WITH_SINGLE_BAND_THRESHOLD
+    )
+    assert ds["qc_single_filter_detection"].values[0] == 0
+    assert ds["qc_single_band_candidate"].values[0] == 0
 
 
 def test_assemble_level_b1_raises_on_misaligned_input():

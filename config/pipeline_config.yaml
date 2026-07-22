@@ -231,15 +231,38 @@ excess:
   # discrimination from the sigma cut itself -- consistent with both
   # precedent papers' own wide-net-then-vet philosophy.
   significance_threshold_sigma: 3.0
-  # STILL NOT SET (researcher's design, 2026-07-22): must be a genuinely
-  # separate, stricter value for qc_single_filter_detection==1 stars (only one
-  # MIRI band was ever measured, so they don't get the dual-band cross-check
-  # that gives the primary criterion above its -- already modest -- statistical
-  # credibility). NOT simply significance_threshold_sigma scaled down. These
-  # stars get their own qc_single_band_candidate marker once this is set,
-  # rather than being silently included at the two-band bar or silently
-  # excluded from candidacy entirely.
-  single_band_significance_threshold_sigma: null
+  # SET 2026-07-22 (researcher's sign-off). Same TRIAGE CUT philosophy as
+  # significance_threshold_sigma above -- NOT a corrected statistical
+  # significance claim. Deliberately a genuinely separate, stricter value,
+  # not significance_threshold_sigma scaled down: qc_single_filter_detection==1
+  # stars (only one MIRI band ever measured) don't get the dual-band
+  # cross-check that gives the primary criterion its own (already modest)
+  # credibility. Derivation (see RESEARCH_CONTEXT.md Decision Log): neither
+  # Carrigan (2009) nor Griffith et al. (2015) offers a directly borrowable
+  # number for a single-band case (Carrigan's own experience was to avoid
+  # a 2-filter significance statistic entirely, adding LRS spectroscopy
+  # instead, specifically because two points couldn't support one; Griffith's
+  # method is structurally multi-band via WISE colors). Derived instead from
+  # a rough independence approximation: the dual-band criterion's own
+  # credibility comes from requiring BOTH bands to independently clear 3
+  # sigma (one-tailed P~1.35e-3 each, joint ~1.8e-6 under independence);
+  # solving for the single one-tailed z giving that same tail probability
+  # alone gives z~4.7. Rounded up to 5.0, not down, given real flux-error
+  # correlation between F770W/F1000W (shared PSF-fit method, shared
+  # diffuse-background-annulus systematic -- see Deferred item 6) that the
+  # independence approximation ignores, and because a single-band detection
+  # loses the cross-check entirely, not partially. Verified against real
+  # data before being set: in the full 273-star, 15-field trial, only 2/273
+  # single-band stars even reach a computed excess_sigma at all (the rest
+  # are disqualified earlier); this value changes zero current results --
+  # it is establishing the policy correctly ahead of when it starts
+  # mattering, not reshaping any existing outcome. These stars get their own
+  # qc_single_band_candidate marker, kept separate from
+  # qc_candidate_preliminary rather than folded in (a true dual-band
+  # candidate and a single-band-only one are different kinds of claim, same
+  # reasoning as output.py's two separate candidate/flagged-for-review
+  # tables).
+  single_band_significance_threshold_sigma: 5.0
   # STOPGAP (added 2026-07-22, see pipeline/excess.py module docstring and
   # RESEARCH_CONTEXT.md Decision Log): the survivor-count check above found
   # that ALL 5 real survivors across all three test fields had a

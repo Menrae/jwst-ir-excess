@@ -3526,6 +3526,129 @@ memory discrepancy is resolved as expected behavior, not a bug, with
 real controlled evidence rather than an assumption. 137 tests pass
 project-wide.
 
+### 2026-07-22 -- single_band_significance_threshold_sigma set to 5.0: literature check, derivation, researcher sign-off, real-data verification
+
+Before deciding what to run/build next (archive-scale run, deferred-item
+work, or moving toward writeup -- see the options discussion this same
+day), the researcher weighted `qc_single_filter_detection` at **270/273
+(98.9%)** in the real 15-field trial as the single highest-leverage open
+item: `qc_candidate_preliminary` requires both bands, so the pipeline
+currently can only ever produce a candidate from the ~1% dual-band
+minority of what real archive data actually looks like. Resolved this
+first, as a near-prerequisite, same process as the original
+`significance_threshold_sigma` decision: literature check, a proposed
+value with derivation, researcher sign-off, then implementation and
+real-data verification -- in that order, not implemented ahead of
+sign-off.
+
+**Literature check (Carrigan 2009, arXiv:0811.2376, re-read directly for
+this question -- full PDF text-extracted via PyMuPDF since the arXiv
+abstract page and a naive WebFetch of the raw PDF both failed to surface
+body text; Griffith et al. 2015, already-cached full text re-searched):
+neither paper offers a directly borrowable number.** Carrigan's own
+preliminary search used 3 IRAS filters (12/25/60 micron, `FQUAL>1`
+required in each); the FINAL published search dropped to 2 filters
+(12, 25 micron) but compensated by adding LRS spectroscopy, for a
+stated reason directly on point:
+
+> "Using the LRS data also overcomes the impact of cirrus and zodiacal
+> light on the 60 micron IRAS filter as well as **the associated
+> impossibility of fitting a Planck distribution with just two filter
+> points and still obtaining a measure of the statistical
+> significance.**"
+
+Real precedent for the *principle* (fewer photometric points is
+categorically weaker footing, not the same test scaled down) -- Carrigan
+judged 2 points insufficient for a meaningful statistic on their own and
+added an entire second instrument rather than defining one. Not a
+number to borrow, and no analogous single-band tier exists to check
+against in the first place: Griffith's method is structurally
+multi-band (W2-W3/W3-W4 colors, the gamma parameter), so a WISE source
+without enough bands for a color simply never enters their sample --
+no single-band case to compare against there either.
+
+**Proposed value, derived (not guessed) from the same logic already
+used to justify the dual-band criterion's own credibility:** requiring
+BOTH bands to independently clear 3 sigma gives, under a rough
+independence approximation (one-tailed, positive-excess-only test per
+band), P(Z>=3) ~ 1.35e-3 per band, joint ~1.8e-6. Solving for the
+single one-tailed z giving that same tail probability alone: z ~ 4.7.
+Flagged explicitly, same honesty standard as the 3.0 threshold's own
+"never cite as look-elsewhere-corrected" caveat: this is an anchor, not
+an exact answer -- F770W/F1000W flux errors are not actually
+independent (shared PSF-fit method; the diffuse-background-annulus
+systematic, Deferred item 6, can bias both bands the same direction),
+so the true equivalent-stringency value could differ from 4.7 in either
+direction and cannot be pinned down further without measuring that
+correlation. Proposed rounding UP, not down, given that uncertainty and
+because a single-band detection loses the cross-check entirely, not
+partially: **5.0**, a round number matching the 3.0 threshold's own
+style.
+
+**Real-data sanity check before proposing, not after:** in the full
+273-star, 15-field trial, only **2/273** single-band-only stars even
+reach a computed `excess_sigma` at all -- the rest are disqualified
+earlier (chiefly `qc_poor_photosphere_fit`, 84%+ of the sample). The one
+large value found (sigma=410.8, `2M0359+2009-B`, star_id
+51369423768911744) is already disqualified by `qc_poor_photosphere_fit`
+AND `qc_rj_extrapolated` regardless of this threshold (its RJ-extrapolated
+prediction is likely the actual source of that implausibly large number,
+not real signal -- see the still-open RJ-validation item). This value
+was therefore known, before implementation, to change zero current
+results -- proposed as low-regret policy-setting ahead of when it
+starts mattering, not as something reshaping today's zero-candidates
+outcome.
+
+**Researcher sign-off: 5.0**, confirmed explicitly (offered 4.5/5.0/6.0
+as options; 5.0 -- the recommended value -- was chosen).
+
+**Implemented** (`config/pipeline_config.yaml`:
+`excess.single_band_significance_threshold_sigma`; `pipeline/excess.py`:
+`assemble_level_b1`'s new `qc_single_band_candidate` block, gated on this
+threshold being non-null, mirroring the existing dual-band block's
+structure). One real structural difference from the dual-band case,
+worth stating explicitly since it is NOT symmetric: `qc_candidate_preliminary`
+requires ALL configured bands significant (an AND across bands, since a
+dual-band star could in principle show excess in either), while
+`qc_single_band_candidate` is an OR across bands -- a genuine
+single-filter-detection star has exactly one band with real photometry;
+the other is always `qc_band_disqualified_{band}` via
+`qc_no_mosaic_for_filter_{band}`, so `qc_excess_clean_{band}` is 0 there
+by construction, making AND vs. OR equivalent in practice for this
+population, but OR is the structurally correct operator, not an
+arbitrary choice. Kept as its own flag, never folded into
+`qc_candidate_preliminary` -- a true dual-band candidate and a
+single-band-only one remain different kinds of claim, same reasoning
+already established for `output.py`'s two separate candidate/
+flagged-for-review tables.
+
+**Tests:** 5 new tests in `tests/test_excess.py`
+(`test_qc_single_band_candidate_*`), including one specifically
+constructed to verify the "genuinely separate, stricter, not the primary
+threshold scaled down" requirement directly: a single-band star at
+sigma~4.0 (clears the 3.0 dual-band bar, confirmed via
+`qc_excess_significant_F770W==1`) does NOT become a
+`qc_single_band_candidate` (needs >=5.0). A second confirms a dual-band
+star with one huge-sigma band does not leak into
+`qc_single_band_candidate` just because one band alone would clear 5.0 --
+that tier is only for stars genuinely never measured in the second band.
+142 tests pass project-wide (137 -> 142).
+
+**Real-data verification, not just synthetic unit tests:** re-ran
+`assemble_level_b1` with the new config against the real cached a0/a1/
+miri_photometry outputs for all 15 trial-batch fields (273 stars).
+Result: **`qc_single_band_candidate` totals 0, `qc_candidate_preliminary`
+totals 0** -- exactly the "changes zero current results" prediction made
+before implementation, now confirmed against real data rather than only
+argued from the a-priori 2/273 count above.
+
+**Status:** `single_band_significance_threshold_sigma` is no longer null;
+Deferred item 4 is resolved. The 98.9% single-band-detection structural
+gap this item existed to close is now closed as a matter of policy --
+whether it actually surfaces new candidates is an empirical question for
+the next larger run, not something this change could answer on the
+current 273-star sample.
+
 ## Deferred to Future Work (consolidated as of 2026-07-22)
 
 Everything below is scattered across individual Decision Log entries
@@ -3573,13 +3696,17 @@ prerequisite.
    because they're not yet known to be right. CONTROLFIELD star index 13
    (see the dedicated walkthrough entry above) is a live instance of
    exactly this gap.
-4. **`single_band_significance_threshold_sigma` / `qc_single_band_candidate`
-   still null/uncomputed.** Deliberately deferred 2026-07-22: must be a
-   genuinely separate, stricter value from the primary threshold (3.0),
-   not a scaled-down copy, since single-band-only stars
-   (`qc_single_filter_detection`) don't get the dual-band cross-check that
-   gives the primary criterion its own (already modest) statistical
-   credibility. No candidate value proposed yet.
+4. **RESOLVED 2026-07-22:** `single_band_significance_threshold_sigma`
+   set to 5.0 (literature check, independence-approximation derivation,
+   researcher sign-off, implementation, and real-data verification
+   against all 273 real trial-batch stars -- see the dedicated Decision
+   Log entry). `qc_single_band_candidate` is now computed. Left as
+   history: this was flagged as a genuinely separate, stricter value
+   from the primary threshold (3.0), not a scaled-down copy, since
+   single-band-only stars (`qc_single_filter_detection`, 98.9% of the
+   real 15-field sample) don't get the dual-band cross-check that gives
+   the primary criterion its own (already modest) statistical
+   credibility -- that reasoning is what the 5.0 value was built from.
 5. **`qc_anomalous_excess` itself** needs all of the above plus items 1-2
    resolved -- currently `qc_contaminant_flagged_partial` (partial) and
    `qc_candidate_preliminary`/`qc_candidate_preliminary_refined`

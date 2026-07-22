@@ -1,0 +1,66 @@
+cat > commit_msg.txt << 'EOF'
+feat: set single-band significance threshold, add qc_single_band_candidate
+
+Resolved as a near-prerequisite before any larger run, after the 15-field
+trial showed 270/273 (98.9%) of real stars are single-band-only --
+qc_candidate_preliminary requires both bands, so until this was set the
+pipeline could only ever produce a candidate from the ~1% dual-band
+minority of what real archive data actually looks like.
+
+config/pipeline_config.yaml, pipeline/excess.py:
+- Literature check first: neither Carrigan (2009) nor Griffith et al.
+  (2015) offers a directly borrowable number. Carrigan's own resolution
+  to an analogous 2-filter problem was to avoid a 2-point significance
+  statistic entirely, adding LRS spectroscopy specifically because "the
+  associated impossibility of fitting a Planck distribution with just
+  two filter points" made a meaningful statistic impossible with only
+  two. Griffith's method is structurally multi-band (WISE colors), with
+  no single-band tier to compare against at all
+- Derived a value instead: the dual-band criterion's own credibility
+  comes from requiring both bands to independently clear 3 sigma: under
+  a rough independence approximation (one-tailed P~1.35e-3 each), the
+  joint probability is ~1.8e-6, and the single one-tailed z giving that
+  same tail probability alone is ~4.7. Rounded up to 5.0, not down,
+  given known F770W/F1000W flux-error correlation (shared PSF-fit
+  method, shared diffuse-background-annulus systematic) that the
+  independence approximation ignores
+- Verified the proposed value against real data before proposing it:
+  in the 273-star, 15-field trial, only 2/273 single-band stars even
+  reach a computed excess_sigma at all (the rest disqualified earlier,
+  chiefly qc_poor_photosphere_fit); the one large value found (sigma=
+  410.8) is already disqualified by qc_poor_photosphere_fit and
+  qc_rj_extrapolated regardless -- this value was known to change zero
+  current results before implementation, not just assumed to
+- Researcher sign-off obtained on 5.0 (offered 4.5/5.0/6.0) before
+  locking in, same process as the original significance_threshold_sigma
+  decision
+- single_band_significance_threshold_sigma: 5.0 (config); new
+  qc_single_band_candidate block in assemble_level_b1, OR-across-bands
+  (not AND like the dual-band criterion -- structurally correct since a
+  single-filter-detection star only ever has one band with real
+  photometry). Kept as its own flag, never folded into
+  qc_candidate_preliminary
+
+tests/test_excess.py:
+- 5 new tests, including one specifically constructed to prove the
+  "genuinely separate, stricter, not the primary threshold scaled down"
+  requirement: a single-band star at sigma~4.0 clears the 3.0 dual-band
+  bar but correctly fails the 5.0 single-band bar. Another confirms a
+  dual-band star with one huge-sigma band does not leak into
+  qc_single_band_candidate
+
+Real-data verification (not just synthetic unit tests): re-ran
+assemble_level_b1 against the real cached a0/a1/miri_photometry outputs
+for all 15 trial-batch fields (273 stars) with the new config --
+qc_single_band_candidate totals 0, qc_candidate_preliminary totals 0,
+exactly the "changes zero current results" prediction, now confirmed
+against real data.
+
+RESEARCH_CONTEXT.md:
+- Log the full literature check, derivation, sign-off, implementation,
+  and real-data verification as its own Decision Log entry
+- Mark Deferred item 4 (single_band_significance_threshold_sigma /
+  qc_single_band_candidate) resolved
+
+Test suite: 142 tests passing (up from 137 at the last commit)
+EOF

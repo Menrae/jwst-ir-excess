@@ -8,16 +8,11 @@ established, and computes the excess significance -- the core scientific
 measurement this whole project is built around. -> data level b1.
 
 STATUS: implements continuous excess-significance scoring, the QC-based
-"clean" rollup, the join/alignment scaffolding, and (as of 2026-07-22)
-qc_excess_significant_{band}/qc_candidate_preliminary now that
-significance_threshold_sigma is set. Deliberately does NOT yet compute:
+"clean" rollup, the join/alignment scaffolding, qc_excess_significant_{band}/
+qc_candidate_preliminary (2026-07-22), and (as of 2026-07-22)
+qc_single_band_candidate now that single_band_significance_threshold_sigma
+is set (see below). Deliberately does NOT yet compute:
 
-- qc_single_band_candidate -- excess.single_band_significance_threshold_sigma
-  is still null. Per the researcher's design (2026-07-22): this must be a
-  genuinely separate, stricter value, not primary_threshold scaled down --
-  single-band-only stars (qc_single_filter_detection==1) don't get the
-  dual-band cross-check that gives the primary criterion its (already
-  modest) statistical credibility. Not yet set.
 - qc_anomalous_excess -- per quality_config.yaml, this additionally
   requires six contaminant flags (qc_photometric_artifact,
   qc_debris_disk_candidate, qc_background_galaxy, qc_evolved_star,
@@ -47,6 +42,35 @@ thousands) makes an analogous "cut wide, then vet every survivor by hand"
 approach the intended follow-through here, not a shortcut being avoided --
 this threshold should never be cited as look-elsewhere-corrected in any
 writeup.
+
+**single_band_significance_threshold_sigma = 5.0 (set 2026-07-22, researcher
+sign-off) is the same triage-cut philosophy, deliberately NOT
+significance_threshold_sigma scaled down.** Single-band-only stars
+(qc_single_filter_detection==1) don't get the dual-band cross-check that
+gives the primary 3.0 criterion its own credibility, so this needed its own
+justification. Neither Carrigan (2009) nor Griffith et al. (2015) offers a
+directly borrowable number (Carrigan's own resolution to an analogous
+2-filter problem was to avoid a 2-point significance statistic entirely by
+adding LRS spectroscopy, specifically because "the associated impossibility
+of fitting a Planck distribution with just two filter points" made a
+meaningful statistic impossible with only two; Griffith's method is
+structurally multi-band via WISE colors and has no single-band tier to
+compare against). Derived instead from a rough independence approximation:
+the dual-band criterion's credibility comes from requiring BOTH bands to
+independently clear 3 sigma (one-tailed P~1.35e-3 each, joint ~1.8e-6 under
+independence); solving for the single one-tailed z giving that same tail
+probability alone gives z~4.7, rounded up to 5.0 given known F770W/F1000W
+flux-error correlation (shared PSF-fit method, shared diffuse-background
+systematic -- Deferred item 6) that the independence approximation ignores.
+Verified against real data before being set (not just derived on paper):
+in the 273-star, 15-field trial, only 2/273 single-band stars even reach a
+computed excess_sigma at all (the rest are disqualified earlier, chiefly
+qc_poor_photosphere_fit); this value changes zero current results. See
+config/pipeline_config.yaml's own comment and RESEARCH_CONTEXT.md Decision
+Log for the full derivation. qc_single_band_candidate is kept as its own
+flag, not folded into qc_candidate_preliminary -- a true dual-band candidate
+and a single-band-only one are different kinds of claim (same reasoning as
+output.py's two separate candidate/flagged-for-review tables).
 
 **Stopgap contaminant flag (added 2026-07-22, retired same day -- see
 DISQUALIFYING_STAR_FLAGS)**: the survivor-count check above found that ALL
@@ -354,10 +378,10 @@ def assemble_level_b1(
     """Joins a0 (star identity), a1 (predicted photosphere flux), and
     miri_photometry.py's output (observed flux) on the shared `star`
     dimension, and computes the excess significance, QC-clean rollups, and
-    (when significance_threshold_sigma is set) qc_excess_significant_{band}/
-    qc_candidate_preliminary. Deliberately does NOT compute
-    qc_single_band_candidate or qc_anomalous_excess -- see module
-    docstring."""
+    (when the respective threshold is set) qc_excess_significant_{band}/
+    qc_candidate_preliminary (dual-band) and qc_single_band_candidate
+    (single-band). Deliberately does NOT compute qc_anomalous_excess -- see
+    module docstring."""
     assert_star_aligned(a0_ds, a1_ds, miri_ds)
 
     bands = config["excess"]["primary_bands"]
@@ -439,9 +463,9 @@ def assemble_level_b1(
     # vetting, not a corrected statistical significance claim).
     # qc_candidate_preliminary requires BOTH configured bands significant,
     # and only applies to dual-band stars (qc_single_filter_detection==0)
-    # -- single-band-only stars get their own, separate, not-yet-set
+    # -- single-band-only stars get their own, separate, more stringent
     # single_band_significance_threshold_sigma/qc_single_band_candidate tier
-    # instead (still null/not computed).
+    # below instead.
     threshold = config["excess"].get("significance_threshold_sigma")
     if threshold is not None:
         significant = {}
@@ -454,6 +478,30 @@ def assemble_level_b1(
         dual_band = ~data_vars["qc_single_filter_detection"][1].astype(bool)
         candidate = dual_band & np.logical_and.reduce([significant[b] for b in bands])
         data_vars["qc_candidate_preliminary"] = ("star", candidate.astype(np.int32))
+
+    # qc_single_band_candidate: only computed once
+    # single_band_significance_threshold_sigma is set (2026-07-22, see
+    # module docstring for the derivation/sign-off). Applies only to
+    # single-band-only stars (qc_single_filter_detection==1) -- for those,
+    # a single-filter-detection star has exactly one band with real
+    # observed flux (the other is always qc_band_disqualified_{band} via
+    # qc_no_mosaic_for_filter, so qc_excess_clean_{band} is 0 there by
+    # construction), so this is an OR across bands, not an AND like the
+    # dual-band criterion above. Kept as its own flag, never folded into
+    # qc_candidate_preliminary -- a true dual-band candidate and a
+    # single-band-only one are different kinds of claim.
+    single_threshold = config["excess"].get("single_band_significance_threshold_sigma")
+    if single_threshold is not None:
+        significant_single_band = []
+        for band in bands:
+            clean = data_vars[f"qc_excess_clean_{band}"][1].astype(bool)
+            sigma = data_vars[f"excess_sigma_{band}"][1]
+            significant_single_band.append(
+                clean & np.isfinite(sigma) & (sigma >= single_threshold)
+            )
+        single_band = data_vars["qc_single_filter_detection"][1].astype(bool)
+        single_band_candidate = single_band & np.logical_or.reduce(significant_single_band)
+        data_vars["qc_single_band_candidate"] = ("star", single_band_candidate.astype(np.int32))
 
     ds = xr.Dataset(data_vars=data_vars, coords={"star": a0_ds["star"].values})
     for band in bands:
