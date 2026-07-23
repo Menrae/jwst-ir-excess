@@ -52,6 +52,7 @@ from pathlib import Path
 
 import astropy.units as u
 import numpy as np
+import requests
 import xarray as xr
 from astropy.coordinates import SkyCoord
 from astropy.table import Table, vstack
@@ -110,7 +111,32 @@ STELLAR_TARGET_CLASSIFICATIONS = {
 }
 
 
+# MIRI's four coronagraphic (Lyot/4QPM) subarrays -- confirmed live
+# 2026-07-23 against the archive-wide query (24/1179 observations, 3
+# targets: BD+60-1753, BD+60-BORESIGHT, TYC-2571-885-1), encoded as a
+# suffix on obs_id (e.g. "..._miri_f1000w-masklyot"), the only place this
+# project's MAST query exposes subarray/mode -- there is no dedicated
+# column for it in the Observations.query_criteria result table.
+CORONAGRAPHIC_SUBARRAY_TOKENS = ("masklyot", "mask1065", "mask1140", "mask1550")
+
+
 # --- MIRI observation query and download -----------------------------------
+
+
+def _is_coronagraphic(obs_id: str) -> bool:
+    """True if obs_id's subarray suffix names one of MIRI's coronagraphic
+    modes (see CORONAGRAPHIC_SUBARRAY_TOKENS). Coronagraphic observations
+    never produce a _cat.ecsv source catalog (confirmed live 2026-07-23 --
+    coronagraphy masks the central source rather than producing a normal
+    point-source field, so the standard MIRI pipeline cataloging step
+    doesn't run for this mode) -- this pipeline's PSF-fit photometry is
+    architecturally inapplicable to occulted data regardless, so these are
+    excluded at the query stage rather than attempted and failing later
+    (see load_miri_catalog_sources's defensive guard for the case this
+    filter doesn't catch, e.g. a coronagraphic mode not yet seen in this
+    project's real data)."""
+    s = str(obs_id).lower()
+    return any(token in s for token in CORONAGRAPHIC_SUBARRAY_TOKENS)
 
 
 def _is_stellar_or_unclassified(classification: str) -> bool:
@@ -131,8 +157,11 @@ def _is_stellar_or_unclassified(classification: str) -> bool:
 def query_miri_observations(filters: list[str]) -> Table:
     """Query MAST for public JWST/MIRI Level 3 imaging observations in the
     given filters, restricted to stellar/unclassified targets (see
-    STELLAR_TARGET_CLASSIFICATIONS). Archive-wide: not restricted to any
-    single target."""
+    STELLAR_TARGET_CLASSIFICATIONS) and excluding coronagraphic subarrays
+    (see CORONAGRAPHIC_SUBARRAY_TOKENS -- these never have a _cat.ecsv
+    catalog product and this pipeline's photometry method doesn't apply to
+    occulted data anyway). Archive-wide: not restricted to any single
+    target."""
     obs = Observations.query_criteria(
         obs_collection="JWST",
         instrument_name="MIRI/IMAGE",
@@ -141,15 +170,66 @@ def query_miri_observations(filters: list[str]) -> Table:
         dataproduct_type="image",
         dataRights="PUBLIC",
     )
-    keep = np.array([_is_stellar_or_unclassified(c) for c in obs["target_classification"]])
+    stellar = np.array([_is_stellar_or_unclassified(c) for c in obs["target_classification"]])
+    coronagraphic = np.array([_is_coronagraphic(o) for o in obs["obs_id"]])
+    keep = stellar & ~coronagraphic
     kept = obs[keep]
     logger.info(
         "Found %d public MIRI Level 3 imaging observations; kept %d "
-        "(stellar-classified or unclassified/ambiguous), dropped %d "
-        "as confidently non-stellar (target_classification allowlist)",
-        len(obs), len(kept), len(obs) - len(kept),
+        "(stellar-classified or unclassified/ambiguous, non-coronagraphic), "
+        "dropped %d as confidently non-stellar and %d as coronagraphic "
+        "(target_classification/subarray allowlists)",
+        len(obs), len(kept), int((~stellar).sum()), int((stellar & coronagraphic).sum()),
     )
     return kept
+
+
+# (connect, read) timeout, seconds, for every HTTP request Observations
+# makes (see _mount_default_timeout_adapter). A "read" timeout on a
+# streamed download means "no new bytes received for this long", not
+# "total transfer time" -- a large-but-actively-progressing file download
+# is safe under this regardless of its total size; only a genuinely
+# stalled connection trips it. 30s to connect (generous; MAST is
+# typically much faster) and 120s of read-stall tolerance (generous
+# enough for a slow-but-alive transfer, short enough to fail fast
+# relative to the ~77-minute real hang this was chosen to bound -- see
+# download_miri_products docstring).
+DOWNLOAD_TIMEOUT_S = (30, 120)
+
+
+class _DefaultTimeoutAdapter(requests.adapters.HTTPAdapter):
+    """A requests.Session has no built-in "default timeout for every
+    request" setting -- each individual .get()/.request() call defaults
+    its own timeout to None (no timeout enforced) unless the CALLER
+    passes one explicitly, and astroquery's own internals never do (see
+    download_miri_products docstring). This is the standard, well-
+    precedented way to inject a default timeout at the transport-adapter
+    layer instead of at every call site: overrides send() to fill in
+    kwargs['timeout'] only when the caller didn't already set one, so an
+    explicit per-call timeout (if any future code ever passes one) is
+    never silently overridden."""
+
+    def __init__(self, timeout: tuple[float, float], *args, **kwargs):
+        self._default_timeout = timeout
+        super().__init__(*args, **kwargs)
+
+    def send(self, *args, **kwargs):
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = self._default_timeout
+        return super().send(*args, **kwargs)
+
+
+def _mount_default_timeout_adapter() -> None:
+    """Mounts _DefaultTimeoutAdapter on Observations' shared requests
+    session, so every HTTP request this module makes via astroquery.mast
+    (queries and downloads alike) gets DOWNLOAD_TIMEOUT_S unless a caller
+    explicitly overrides it. Idempotent (re-mounting just replaces the
+    prior adapter) and cheap, so called at the start of
+    download_miri_products rather than at import time -- keeps the fix
+    co-located with the function it exists to protect."""
+    adapter = _DefaultTimeoutAdapter(DOWNLOAD_TIMEOUT_S)
+    Observations._session.mount("https://", adapter)
+    Observations._session.mount("http://", adapter)
 
 
 def download_miri_products(obs_table: Table, download_dir: Path) -> Table:
@@ -164,7 +244,22 @@ def download_miri_products(obs_table: Table, download_dir: Path) -> Table:
     explicit calib_level=3 filter -- i2d.fits also exists as a per-exposure
     Level 2b product with the same subgroup label -- were verified
     empirically against the live MAST archive on 2026-07-15.
+
+    Real bug fixed 2026-07-23 (see RESEARCH_CONTEXT.md Decision Log):
+    `NGC6720` hung for ~77 minutes during download (a 15-field trial
+    re-run), then finally failed with "ReadTimeout... (read timeout=None)"
+    -- confirmed directly in astroquery's own source
+    (astroquery.mast.observations.Observations._download_files calls
+    self.download_file(...) with no timeout argument, which defaults
+    Python `requests`' own per-call timeout to None, i.e. genuinely no
+    timeout enforced at all) that a single hung field could otherwise
+    stall an entire multi-hour archive-scale run indefinitely, not just
+    slow it down. astroquery.mast.Conf.timeout does NOT help here --
+    confirmed it is never consulted by the file-download code path,
+    only by other (metadata-query) request types. Fixed via
+    _mount_default_timeout_adapter instead, at the transport layer.
     """
+    _mount_default_timeout_adapter()
     products = Observations.get_product_list(obs_table)
     mosaics = Observations.filter_products(
         products, productSubGroupDescription="I2D", calib_level=3
@@ -232,6 +327,29 @@ def load_miri_catalog_sources(manifest: Table, obs_table: Table) -> Table:
         )
         all_sources.append(sources)
 
+    if not all_sources:
+        # Real bug, fixed 2026-07-23 (see RESEARCH_CONTEXT.md Decision
+        # Log): this used to fall straight through to vstack([]), which
+        # raises astropy's generic "no values provided to stack" --
+        # correct in effect but useless for attributing the cause.
+        # query_miri_observations now filters out the one confirmed cause
+        # (coronagraphic subarrays, which never have a _cat.ecsv) at the
+        # query stage, so reaching here means some OTHER, not-yet-seen
+        # cause left every observation for this target without a
+        # downloaded catalog -- worth failing loudly and specifically,
+        # not silently or opaquely.
+        target_names = sorted({str(row["target_name"]) for row in obs_table})
+        raise ValueError(
+            f"load_miri_catalog_sources: zero MIRI catalog sources across "
+            f"{len(obs_by_id)} observation(s) for target(s) {target_names} -- "
+            f"every observation was missing a downloaded _cat.ecsv (see the "
+            f"'No _cat.ecsv downloaded' warnings above for which). Known "
+            f"cause: coronagraphic subarrays (already filtered by "
+            f"query_miri_observations); if that's not it, this is a new, "
+            f"unexplained case worth investigating before assuming it's safe "
+            f"to skip."
+        )
+
     combined = vstack(all_sources, metadata_conflicts="silent")
     combined["source_row_id"] = np.arange(len(combined))
     logger.info(
@@ -280,11 +398,64 @@ def _propagate(
     return coords.apply_space_motion(new_obstime=target_epoch)
 
 
+# Real bug fixed 2026-07-23 (see RESEARCH_CONTEXT.md Decision Log):
+# calibration standards are re-observed dozens to hundreds of times across
+# proposals, virtually always at the identical sky position (confirmed
+# live: BD+60-1753, 79 observations, RA/Dec range ~0.2 arcsec) -- grouping
+# Gaia cone searches by raw obs_id, as this function used to, launches one
+# nearly-identical query per repeat observation (79 queries instead of 1,
+# 439s of a 675s field total). GAIA_QUERY_DEDUP_RADIUS_ARCSEC groups
+# observations whose field centers fall within this radius into a single
+# shared cone search instead. Chosen conservatively small (5") relative to
+# both the real repeat-visit spread found (~0.2") and FIELD_CONE_RADIUS_ARCSEC
+# (90") -- comfortably large enough to catch genuine repeat visits, nowhere
+# near large enough to accidentally merge distinct mosaic-tile pointings in
+# a tiled survey (adjacent tiles are offset by tens of arcsec at minimum,
+# given the MIRI imager's own ~72"x114" FOV). This only dedupes the QUERY
+# itself (a static cone search against Gaia's reference-epoch catalog, so
+# it has no epoch dependence); each source's own obs_epoch_mjd is still
+# used individually for its own proper-motion-propagated match below, so
+# grouping observations together does not affect match precision.
+GAIA_QUERY_DEDUP_RADIUS_ARCSEC = 5.0
+
+
+def _group_observations_by_position(
+    obs_centers: dict[str, tuple[float, float]], dedup_radius_arcsec: float
+) -> dict[str, str]:
+    """Greedily clusters obs_ids whose field centers fall within
+    dedup_radius_arcsec of an already-seen cluster's representative center.
+    Returns {obs_id: representative_obs_id} -- every obs_id maps to exactly
+    one representative (itself, if it started a new cluster), so a single
+    Gaia query per representative can be shared across its whole cluster.
+    Order-preserving (first-seen obs_id in each cluster becomes the
+    representative) and O(n_obs * n_clusters), fine at this project's
+    per-target observation counts (up to ~100)."""
+    representative_for: dict[str, str] = {}
+    rep_coords: list[tuple[str, SkyCoord]] = []
+    for obs_id, (ra, dec) in obs_centers.items():
+        point = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+        match = None
+        for rep_id, rep_point in rep_coords:
+            if point.separation(rep_point).arcsec <= dedup_radius_arcsec:
+                match = rep_id
+                break
+        if match is None:
+            representative_for[obs_id] = obs_id
+            rep_coords.append((obs_id, point))
+        else:
+            representative_for[obs_id] = match
+    return representative_for
+
+
 def crossmatch_gaia(miri_sources: Table, radius_arcsec: float) -> Table:
     """Cross-match each MIRI source against Gaia DR3, one cone search per
-    MIRI observation (covering the field), propagating each candidate's
-    Gaia position to the MIRI observation epoch before measuring separation.
-    Adds Gaia columns plus qc_no_gaia_match / qc_ambiguous_gaia_match.
+    DISTINCT FIELD CENTER (observations at virtually the same sky position
+    share a query -- see _group_observations_by_position/
+    GAIA_QUERY_DEDUP_RADIUS_ARCSEC), propagating each candidate's Gaia
+    position to EACH SOURCE'S OWN observation epoch before measuring
+    separation (query grouping is position-only and has no epoch
+    dependence, so this is unaffected by the grouping above it). Adds Gaia
+    columns plus qc_no_gaia_match / qc_ambiguous_gaia_match.
 
     Results are scattered back into pre-allocated arrays by each source's
     original row index (not appended in per-observation loop order, then
@@ -311,24 +482,44 @@ def crossmatch_gaia(miri_sources: Table, radius_arcsec: float) -> Table:
     ambiguous = np.zeros(n, dtype=bool)
 
     obs_ids = np.asarray(miri_sources["obs_id"])
-    for obs_id in np.unique(obs_ids):
-        idx = np.flatnonzero(obs_ids == obs_id)
-        field = miri_sources[idx]
-        center = SkyCoord(
-            ra=np.mean(field["miri_ra"]) * u.deg,
-            dec=np.mean(field["miri_dec"]) * u.deg,
+    unique_obs_ids = np.unique(obs_ids)
+    obs_centers = {
+        obs_id: (
+            float(np.mean(miri_sources["miri_ra"][obs_ids == obs_id])),
+            float(np.mean(miri_sources["miri_dec"][obs_ids == obs_id])),
         )
-        obs_epoch = Time(field["obs_epoch_mjd"][0], format="mjd")
+        for obs_id in unique_obs_ids
+    }
+    representative_for = _group_observations_by_position(obs_centers, GAIA_QUERY_DEDUP_RADIUS_ARCSEC)
+    n_groups = len(set(representative_for.values()))
+    if n_groups < len(unique_obs_ids):
+        logger.info(
+            "Grouped %d MIRI observations into %d distinct Gaia query "
+            "position(s) (dedup radius %.1f arcsec) -- %d redundant cone "
+            "search(es) avoided",
+            len(unique_obs_ids), n_groups, GAIA_QUERY_DEDUP_RADIUS_ARCSEC,
+            len(unique_obs_ids) - n_groups,
+        )
 
+    candidates_by_representative: dict[str, Table] = {}
+    for rep_id in set(representative_for.values()):
+        center = SkyCoord(ra=obs_centers[rep_id][0] * u.deg, dec=obs_centers[rep_id][1] * u.deg)
         job = Gaia.launch_job(
             f"SELECT {', '.join(gaia_cols)} FROM {GAIA_TABLE} "
             f"WHERE 1=CONTAINS(POINT('ICRS', ra, dec), "
             f"CIRCLE('ICRS', {center.ra.deg}, {center.dec.deg}, "
             f"{FIELD_CONE_RADIUS_ARCSEC / 3600.0}))"
         )
-        candidates = job.get_results()
+        candidates_by_representative[rep_id] = job.get_results()
+
+    for obs_id in unique_obs_ids:
+        candidates = candidates_by_representative[representative_for[obs_id]]
         if len(candidates) == 0:
             continue  # leave as no_match=True / NaN for this field's rows
+
+        idx = np.flatnonzero(obs_ids == obs_id)
+        field = miri_sources[idx]
+        obs_epoch = Time(field["obs_epoch_mjd"][0], format="mjd")
 
         candidate_pos = _propagate(
             candidates["ra"].data,
@@ -488,6 +679,26 @@ def pivot_to_one_row_per_star(sources: Table, filters: list[str]) -> Table:
     logged, not silently dropped -- rather than picking the best or keeping
     both. Revisit if this fires at a non-negligible rate in the real
     archive; not expected to be common but not verified absent either.
+
+    Row order (real bug, fixed 2026-07-23, see RESEARCH_CONTEXT.md Decision
+    Log): the returned table's row order is explicitly first-appearance
+    order of star_id in `sources`, NOT an incidental byproduct of internal
+    pandas operations. This was never true before this fix -- `.unstack()`
+    (used below to pivot filter-level columns wide) always sorts its
+    resulting index ascending, and that sort silently propagated through to
+    the final row order. Since unmatched-source sentinel star_ids are small
+    negative integers and Gaia-matched star_ids are large positive
+    gaia_source_ids, EVERY unmatched star used to sort before EVERY
+    Gaia-matched star, with no exception -- confirmed live (2026-07-23
+    smoke batch) to silently and severely bias any downstream ".isel(star=
+    slice(0, N))"-style cap toward unmatched, structurally-unanalyzable
+    stars, excluding nearly all Gaia-matched (and therefore all
+    dual-band-capable) stars whenever a field has more than N unmatched
+    detections -- the common case. Explicitly restored to first-appearance
+    order below so any future consumer relying on row order (this function
+    never documented one before, but evidently something started assuming
+    one) gets a stable, non-surprising order rather than an accidental
+    numeric sort.
     """
     df = sources.to_pandas()
 
@@ -510,6 +721,10 @@ def pivot_to_one_row_per_star(sources: Table, filters: list[str]) -> Table:
         )
         df = df.loc[~dup_mask]
 
+    # Captured BEFORE unstack() below, which otherwise silently determines
+    # final row order via its own ascending index sort -- see docstring.
+    appearance_order = df["star_id"].drop_duplicates().tolist()
+
     star_level_cols = [
         c for c in df.columns
         if c == "gaia_source_id"
@@ -527,6 +742,7 @@ def pivot_to_one_row_per_star(sources: Table, filters: list[str]) -> Table:
     n_filters_present = df.groupby("star_id")["filter"].nunique()
 
     pivoted = star_frame.join(filter_frame, how="outer")
+    pivoted = pivoted.reindex(appearance_order)
     pivoted["qc_single_filter_detection"] = (
         n_filters_present.reindex(pivoted.index) < len(filters)
     ).astype(np.int32)
@@ -617,6 +833,50 @@ def save_level_a0(ds: xr.Dataset, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     ds.to_netcdf(path)
     logger.info("Saved level a0 dataset to %s (%d stars)", path, ds.sizes["star"])
+
+
+def cap_stars_for_compute_budget(ds: xr.Dataset, max_stars: int, seed: int) -> xr.Dataset:
+    """Bounds photosphere.py's expensive per-star fit cost for exploratory/
+    smoke-test runs (`retriever.run()` itself never caps -- this is only
+    for batch scripts that need a predictable runtime ceiling) by drawing a
+    RANDOM sample of at most max_stars from ds, not the first max_stars in
+    row order. A no-op if ds already has <= max_stars stars, same as a
+    plain slice would be.
+
+    Real bug fixed 2026-07-23 (see RESEARCH_CONTEXT.md Decision Log): a
+    first-N-by-row-order cap (`ds.isel(star=slice(0, max_stars))`) used to
+    systematically exclude nearly all Gaia-matched stars, because
+    pivot_to_one_row_per_star's row order happened (before its own
+    2026-07-23 fix) to sort unmatched-sentinel star_ids ahead of every real
+    gaia_source_id. That root cause is now fixed at the source, but capping
+    to a fixed PREFIX of any row order remains fragile to whatever
+    incidental ordering the upstream table happens to have -- a random
+    sample removes that entire class of risk structurally, not just the
+    one instance already found.
+
+    Random vs. Gaia-matched-priority (the other option considered,
+    researcher's call 2026-07-23): random sampling was chosen because it
+    preserves the capped sample's value as an unbiased (sampling-variance-
+    subject, not systematically-biased) ESTIMATE of the field's true
+    population -- a Gaia-matched-priority cap would guarantee analyzable
+    stars survive every time, but would make every capped-run aggregate
+    statistic (dual-band rate, real-fit rate, etc.) deliberately non-
+    representative by construction, requiring a permanent caveat on every
+    future use of a capped run's numbers. Random sampling does not change
+    the cap's worst-case compute-cost bound either way: up to max_stars
+    stars needing a real photosphere fit was already the theoretical worst
+    case under the old (broken) policy; same worst case here, just no
+    longer an accidentally-avoided one.
+
+    seed is required, not defaulted, so callers must make an explicit,
+    reproducible choice (batch scripts should log theirs) rather than
+    getting silently different samples across re-runs."""
+    n = ds.sizes["star"]
+    if n <= max_stars:
+        return ds
+    rng = np.random.default_rng(seed)
+    idx = np.sort(rng.choice(n, size=max_stars, replace=False))
+    return ds.isel(star=idx)
 
 
 # --- Orchestration ------------------------------------------------------------

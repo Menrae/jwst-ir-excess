@@ -106,6 +106,24 @@ photosphere:
   # not a derived scientific threshold). Revisit once real fit results
   # exist to see what a "poor fit" actually looks like in practice.
   poor_fit_reduced_chi2_threshold: 5.0
+  # qc_starved_photosphere_fit threshold (SET 2026-07-23, real bug found
+  # while individually vetting this project's first qc_candidate_preliminary
+  # hits -- see RESEARCH_CONTEXT.md). Minimum count_effective_bands()
+  # (pipeline/photosphere.py) required for a fit to be trusted --
+  # NOT the same as raw band count: Gaia's G/BP/RP are treated as
+  # contributing at most 1 combined effective band (they're mutually
+  # correlated views of one optical color, not 3 independent constraints),
+  # while each 2MASS band counts individually. Confirmed directly on two
+  # real candidates (HD-152249, SN2017gci): both had n_bands_used=3, all
+  # Gaia-only (effective=1), a near-degenerate 2-free-parameter fit against
+  # ~1 real color constraint -- "technically converged" chi2 near zero
+  # close to guaranteed regardless of whether the Teff is physically
+  # correct. 3 requires genuine over-determination (>=2 real degrees of
+  # freedom against the 2-parameter Teff+normalization model), not just
+  # barely-more-than-exact -- chosen to exactly separate the two real
+  # starved cases found (effective=1) from the two well-constrained real
+  # candidates that were NOT starved (effective=4, Gaia + full 2MASS).
+  min_effective_bands: 3
   extinction:
     dust_map: "bayestar2019"
     # mode='best' + max_samples=0 (see estimate_extinction in photosphere.py

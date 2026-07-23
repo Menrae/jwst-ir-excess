@@ -132,3 +132,51 @@ def test_profile_teff_err_discrete_floors_at_half_node_spacing():
     cache = {best_i: 0.0, best_i - 1: 50.0, best_i + 1: 50.0}
     err = ps._profile_teff_err_discrete(nodes, cache, best_teff, chi2_min=0.0)
     assert err == pytest.approx(50.0)
+
+
+# --- count_effective_bands (2026-07-23 starved-fit gate) ---------------------
+
+
+def _mags(**present):
+    """All FIT_BAND_NAMES default to NaN (absent); override with present."""
+    return {b: present.get(b, np.nan) for b in ps.FIT_BAND_NAMES}
+
+
+def test_count_effective_bands_gaia_only_counts_as_one():
+    # Regression test for the real 2026-07-23 bug: HD-152249 and SN2017gci
+    # both had all 3 Gaia bands (G/BP/RP) and NOTHING else, and both
+    # produced a "technically converged" but essentially unconstrained
+    # Teff -- Gaia's three bands are mutually correlated views of one
+    # optical color, not 3 independent constraints.
+    mags = _mags(Gaia_G=17.0, Gaia_BP=17.5, Gaia_RP=16.3)
+    assert ps.count_effective_bands(mags) == 1
+
+
+def test_count_effective_bands_gaia_plus_full_2mass_counts_as_four():
+    # Regression test: AX-J1600.9-5142 and J1757132 both had all 6 bands
+    # (Gaia + full 2MASS) and produced sharp, cross-validated (Kurucz AND
+    # PHOENIX agree) chi2 minima -- genuinely well-constrained fits, not
+    # starved ones. Gaia contributes 1 combined effective band; each
+    # 2MASS band counts individually (3 more) -- 4 total.
+    mags = _mags(
+        Gaia_G=17.0, Gaia_BP=17.5, Gaia_RP=16.3,
+        **{"2MASS_J": 14.4, "2MASS_H": 14.0, "2MASS_Ks": 13.8},
+    )
+    assert ps.count_effective_bands(mags) == 4
+
+
+def test_count_effective_bands_partial_gaia_still_counts_as_one():
+    # Even a single Gaia band present should count as 1, not 0 -- the
+    # correlated-group rule is "at most 1 combined if ANY member is
+    # present", not "only if all three are present".
+    mags = _mags(Gaia_G=17.0)
+    assert ps.count_effective_bands(mags) == 1
+
+
+def test_count_effective_bands_2mass_only_counts_individually():
+    mags = _mags(**{"2MASS_J": 14.4, "2MASS_H": 14.0})
+    assert ps.count_effective_bands(mags) == 2
+
+
+def test_count_effective_bands_none_present_is_zero():
+    assert ps.count_effective_bands(_mags()) == 0

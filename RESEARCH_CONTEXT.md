@@ -3526,6 +3526,64 @@ memory discrepancy is resolved as expected behavior, not a bug, with
 real controlled evidence rather than an assumption. 137 tests pass
 project-wide.
 
+> **CORRECTION NOTE, added 2026-07-23 -- read before trusting the
+> real-fit-rate and disqualification numbers above at face value.**
+> This entire run used the SAME batch-script capping mechanism later
+> found (2026-07-23, via the 75-field smoke batch) to systematically
+> exclude nearly all Gaia-matched stars from any field with more than 20
+> unmatched raw detections (see that day's Decision Log entry for the
+> full root cause: `pivot_to_one_row_per_star`'s `.unstack("filter")`
+> had an unintended ascending-sort side effect). **Checked directly for
+> this run specifically: 11 of these 15 fields had ZERO Gaia-matched
+> stars survive their cap** -- only `2M0359+2009-B` and `HD55677`
+> (both with true uncapped star counts already below the 20-star cap,
+> so the cap never actually applied to them) contributed any of the "5
+> real photosphere fits" this entry reports. The 13 "properly capped"
+> fields contributed nothing but structurally-unanalyzable, already-
+> disqualified placeholder rows to the 233/273-star aggregate above.
+>
+> **What this means for the specific claims in this entry, checked by
+> re-running the same 15 fields with the fix applied (2026-07-23; 14/15
+> completed -- `NGC6720` hit an unrelated live MAST `ReadTimeout` after
+> hanging ~77 minutes, a real but separate operational finding, not one
+> of the four bugs fixed that day; not yet re-verified), same-14-field
+> apples-to-apples comparison (253 stars both times, `NGC6720` excluded
+> from both sides):**
+>
+> | | before (buggy cap) | after (fixed cap) |
+> |---|---|---|
+> | real photosphere fits | 5/253 (2.0%) | **12/253 (4.7%)** |
+> | `qc_star_disqualified` | 251/253 (99.2%) | 251/253 (99.2%) -- **unchanged** |
+> | `qc_single_filter_detection` | 250/253 (98.8%) | 246/253 (97.2%) |
+> | `qc_candidate_preliminary` | 0 | 0 -- **unchanged** |
+> | `qc_contaminant_flagged_partial` | 35/253 (13.8%) | 53/253 (20.9%) |
+>
+> **Retracted/corrected, not just superseded:** the specific figures "5/233
+> stars (2.1%)," "188/233 (80.7%) lacked 2 usable bands," and the framing
+> "CONTROLFIELD's 33s/star was closer to a worst case than typical" were
+> measured on a sample that had NOT actually tested a representative
+> cross-section of Gaia-matched stars, as the entry's own confident
+> framing implied -- the true real-fit rate on the same fields is
+> roughly 2.3x higher (4.7% vs. 2.0%) once the bias is removed. The
+> QUALITATIVE conclusion (most raw MIRI detections lack a clean Gaia
+> match and never reach a real fit; CONTROLFIELD's 100%-matched sample
+> is not typical) remains directionally correct and is, if anything,
+> reinforced by the corrected number -- but the specific 2.1%/80.7%
+> figures should not be cited as measured on a representative sample.
+> **Not retracted, confirmed instead:** the headline "271/273
+> disqualified, 0 candidates" claim -- the disqualification rate and
+> candidate count are IDENTICAL before and after the fix on the
+> comparable 253-star subset, so this specific run's zero-candidates
+> result holds up under the corrected sampling, unlike the 75-field
+> smoke batch's re-run (same day), which DID surface new candidates
+> once its own sampling bias was fixed (see that entry -- ultimately
+> not validated as real excess either, but for a different, Teff-vs-
+> classification-plausibility reason, not a sampling artifact). The
+> difference is real, not a contradiction: this 15-field run's fields
+> were mostly bright calibration/SN/nearby-star targets, structurally
+> less likely to contain the kind of faint, poorly-constrained fit that
+> produced the smoke batch's four spurious candidates.
+
 ### 2026-07-22 -- single_band_significance_threshold_sigma set to 5.0: literature check, derivation, researcher sign-off, real-data verification
 
 Before deciding what to run/build next (archive-scale run, deferred-item
@@ -3648,6 +3706,774 @@ gap this item existed to close is now closed as a matter of policy --
 whether it actually surfaces new candidates is an empirical question for
 the next larger run, not something this change could answer on the
 current 273-star sample.
+
+> **CORRECTION NOTE, added 2026-07-23:** the 273-star sample this
+> verification ran against is the same one later found to have a
+> systematic Gaia-matched-star sampling bias (see the correction note on
+> the 2026-07-22 "15-field trial batch: results" entry above). This does
+> NOT change the threshold VALUE (5.0, derived from literature/statistics,
+> independent of any sample), and the re-run with the bias fixed
+> (2026-07-23, 14/15 fields) confirms `qc_candidate_preliminary` still
+> totals 0 on the corrected sample too -- but the specific "2/273
+> single-band stars reach a computed sigma" count above was measured on
+> the biased sample and should not be read as representative.
+
+### 2026-07-23 -- 75-field random smoke batch: a systematic sampling-bias bug found (affects this run AND the 15-field trial), plus two smaller real bugs, dense-field-frequency and bulk-query-reliability verdicts
+
+Before deciding between a full 691-target run, more deferred-item work, or
+the RNAAS-note path, ran a 50-100-field smoke batch per the researcher's
+sign-off, specifically to stress the two flagged risks (bulk IN-clause
+crossmatch queries at higher volume; real dense-field frequency) that the
+15-field trial couldn't exercise.
+
+**Field selection, decided and stated before running, not after:**
+random draw, not stratified -- the 15-field run was deliberately
+stratified for category coverage; this run's purpose (realistic bulk-
+query volume, an honest dense-field-frequency measurement) specifically
+needs an unbiased draw, which a second stratified sample would defeat by
+construction. 75 targets via `random.Random(20260723).sample()` over the
+676-target pool (691 archive-wide, confirmed unchanged since the
+15-field run, minus the 15 already tested). Seed recorded for
+reproducibility. Disk headroom confirmed ample beforehand (905 GB free
+vs. an extrapolated ~7 GB for this batch, ~70 GB for a full archive run)
+-- never a real constraint at any scale considered.
+
+**Result: 74/75 fields succeeded, 1 failed cleanly** (isolated by the
+same per-field try/except as the 15-field run -- did not abort the
+batch). Total wall time 4630.9s (77.2 min); cumulative disk 5.55 GB.
+Zero TAP/VizieR query failures or timeouts across the entire run
+(~222 live network calls: `query_gaia_variability`,
+`fetch_debris_disk_catalog`, `query_cluster_membership`, all in
+`contaminants.py`, called once per field regardless of star count) --
+**the bulk IN-clause queries held up fine at this call volume.** Stated
+caveat, given before the run and still true after it: every one of
+those per-field queries stays bounded to that field's own <=20 star IDs
+regardless of field density, so this stresses **repeated-call
+reliability** (~5x the call volume of the 15-field run), not
+**query-string length at true archive scale** (a single query over
+1000+ IDs at once) -- that specific risk remains untested, and would
+only be exercised by a genuinely archive-wide, non-per-field query
+pattern.
+
+**By far the most important finding of this run, discovered while
+investigating an unexpectedly extreme aggregate number, not assumed:**
+the capped 74-field sample came back with **100% `qc_single_filter_detection`
+and 0 dual-band stars out of 1425** -- every single star. That is far
+more extreme than chance alone would produce even under a genuinely low
+archive-wide dual-band rate, and turned out to be a real, previously
+undetected **systematic sampling bias in how these batch scripts cap
+each field's star count, not a property of the archive.**
+
+**Root cause, precisely identified, not just described:** `pivot_to_one_row_per_star`
+(`pipeline/retriever.py`) never documented or intended a specific row
+order as a downstream invariant -- but `.unstack("filter")` (used to
+pivot filter-level columns wide) has an undocumented-by-this-project
+side effect: it always sorts its resulting index ascending, and that
+sort order propagates through the subsequent `.join(..., how="outer")`
+into the function's final row order. Confirmed with a minimal, exact
+reproduction of the real code's steps. Since unmatched-source sentinel
+`star_id`s are small negative integers (`-(source_row_id + 1)`) and
+Gaia-matched stars use `gaia_source_id` (~19-digit positive integers),
+**every unmatched star sorts strictly before every Gaia-matched star,
+for every field, without exception.** The trial/smoke batch scripts'
+`MAX_STARS_PER_FIELD` cap (`a0_ds.isel(star=slice(0, 20))`, both
+`run_trial_batch.py` and this run's `run_smoke_batch.py`) takes literally
+the first 20 rows in that order -- so any field with more than 20
+unmatched raw detections (confirmed the common case: 71/74 fields here)
+has its cap **entirely exhausted by unmatched, structurally-unanalyzable
+singleton detections before a single Gaia-matched star is ever reached.**
+Confirmed directly on three real fields, not inferred: `S-1` (32 true
+dual-band stars in its full 824-star population, all at row positions
+773-823 -- the cap catches 0), `24aecx` (1 true dual-band star, at the
+very last row, position 524 of 525 -- the cap catches 0), `HD-152249`
+(151 true dual-band stars, positions 889-1050 of 1051 -- the cap catches
+0). Across the full 74-field batch: **71/74 fields had ZERO Gaia-matched
+stars survive the cap at all**; the only 3 that did (`DOAR-33`,
+`HOPS-383-MIRI`, `HOPS-56-MIRI`) are exactly the 3 fields whose *true*
+uncapped detection count happened to be small enough (17, 12, 30) that
+the cap barely mattered -- not a coincidence, the direct mechanism.
+
+**This is not a bug in the QC flag computation itself** -- `qc_single_filter_detection`
+is computed correctly from `n_filters_present` (a proper per-star
+distinct-filter count, order-independent) before any capping happens.
+The bug is entirely in which rows survive the cap afterward, i.e. a
+harness/batch-script sampling problem, though its root mechanism (the
+unintended sort) lives in `pipeline/retriever.py` itself. `retriever.run()`
+(the actual production orchestration function) never caps at all --
+capping only exists in these exploratory batch scripts, added solely to
+bound `photosphere.py`'s per-star compute cost.
+
+**This also retroactively affects the 15-field trial's own numbers,
+checked directly, not assumed:** of the 15 trial-batch fields, **11 had
+zero Gaia-matched stars in their capped sample too** -- the only
+exceptions (`2M0359+2009-B`, `HD55677`) again happen to be the two
+fields whose true uncapped count (8, 5) was already below the cap. Every
+one of the 5 real photosphere fits reported in that run's Decision Log
+entry came from those same 2 small fields -- meaning the "only 5/233
+stars ever needed a real fit, CONTROLFIELD's 33s/star was closer to a
+worst case" finding is very likely a genuine, real property of the
+archive (broadly consistent with this project's own established
+"vast majority of raw detections lack a clean Gaia match" pattern from
+earlier real-data checks) but was NOT actually demonstrated on a
+representative sample the way that entry implied -- the 13 fields that
+were "properly" capped (n_uncapped > 20) contributed zero Gaia-matched
+stars between them, so the true archive-wide real-fit rate remains an
+open question, not a settled one, despite the confident framing in the
+2026-07-22 entry. **The original 3-field checks (PN-TC-1 in full;
+CONTROLFIELD/NGC-602 capped "at the first 20 of their true Gaia-matched
+stars," per that entry's own explicit wording) used a different, deliberate,
+Gaia-matched-first selection done by hand and are NOT subject to this
+bug** -- this is specifically a defect in the generic `run_trial_batch.py`/
+`run_smoke_batch.py` capping pattern introduced for the 15-field run
+onward, not a project-wide issue.
+
+**Proposed fix, not applied (per the researcher's standing instruction
+not to patch mid-run) -- two independent options, either or both:**
+1. Fix `pivot_to_one_row_per_star` to not impose an unintended sort at
+   all (e.g. reindex `filter_frame` back to the original first-appearance
+   order captured before `.unstack()`, so row order reflects arrival
+   order as the `groupby(..., sort=False)` call already suggests was
+   intended, rather than an accidental numeric sort). Removes the root
+   mechanism entirely, benefits any future consumer that assumes order
+   is arbitrary-but-stable, not just this batch script.
+2. Fix the batch scripts' capping strategy directly: replace
+   `.isel(star=slice(0, MAX_STARS_PER_FIELD))` with either a seeded
+   random sample of the full pivoted population (removes the systematic
+   bias, leaves representation to honest chance) or a stratified cap
+   that guarantees any available Gaia-matched/dual-band stars are kept
+   first (deliberately, since unmatched singletons are structurally
+   incapable of a real photosphere fit or candidacy at all --
+   `photosphere.py`'s own `n_available_bands < 2` early exit means
+   capping to unmatched-heavy stars provides almost none of the actual
+   compute-cost protection the cap exists for, while still burning the
+   field's own "budget" of analyzable stars).
+Recommendation if asked: do both -- (1) because the sort was never a
+documented invariant and silently surprising row order is a latent risk
+beyond just this batch script; (2) because a representative cap is the
+more direct fix for what these smoke/trial batches are actually for.
+
+**Two smaller, real, non-blocking findings, also from this run:**
+
+- **`TYC-2571-885-1` failed with an uninformative `ValueError: no values
+  provided to stack.`** Root cause, confirmed against the live MAST
+  product listing: all 8 of this target's observations use MIRI's Lyot
+  coronagraph mode (`f1000w-masklyot`), and coronagraphic observations
+  never produce a `_cat.ecsv` catalog product at all (confirmed: 8 I2D
+  mosaics, 0 CAT products) -- physically sensible, since coronagraphy
+  masks the central source rather than producing a normal point-source
+  field. `load_miri_catalog_sources`'s `if len(cat_rows) == 0: continue`
+  correctly skips each such observation individually, but when *every*
+  observation for a target hits that path, the resulting empty list hits
+  an unguarded `vstack([])`, raising astropy's generic internal error
+  instead of an attributable one. **Proposed fix, not applied:** (1) the
+  more correct one -- filter coronagraphic subarrays (`masklyot`,
+  `mask1065`, `mask1140`, `mask1550`) out at the query stage
+  (`query_miri_observations`), since this pipeline's PSF-fit photometry
+  is architecturally inapplicable to occulted data in the first place;
+  (2) defensively regardless -- guard the `vstack` call with an explicit,
+  clearly-worded `ValueError` if `all_sources` is empty, so any other
+  future zero-catalog case fails attributably too.
+- **`BD+60-1753` cost 674.99s, 439.29s of it in `retriever.crossmatch_gaia`
+  alone** (vs. a 31.12s max across the entire 15-field run). Root cause,
+  confirmed directly: this target is a JWST photometric calibration
+  standard with 79 separate MAST observations, all at virtually the
+  identical sky position (RA/Dec range ~0.2 arcsec -- the same star,
+  repeatedly re-observed for calibration across many proposals).
+  `crossmatch_gaia` launches one synchronous Gaia TAP cone search per
+  observation ID, not per distinct sky position, so this field triggered
+  79 nearly-identical queries instead of one. Not a correctness bug --
+  a real, previously-unseen cost driver the 15-field run had no
+  calibration-standard-heavy field to expose. **Proposed fix, not
+  applied:** group observations by near-identical field center (e.g.
+  within a few arcsec) before launching a cone search, not by raw
+  `obs_id`, cutting redundant-query cost for any target observed
+  repeatedly at the same position (calibration standards specifically,
+  but not exclusively).
+
+**Dense-field-frequency verdict, the second flagged risk, now answered
+with a real random-sample number instead of one stratified data point:**
+NGC-346-scale fields (>=1500 raw detections) occurred in **1/74 (1.35%)**
+of this random sample (`NGC-891`, a real edge-on spiral galaxy, 1539
+raw detections, ran in 72.3s -- fast, same short-circuit pattern as
+everything else this dense). The 15-field stratified sample deliberately
+included exactly 1 such field out of 15 (6.7%) -- meaning the stratified
+sample over-represented this category by roughly 5x relative to a true
+random draw, exactly as intended by its own stated design (category
+coverage, not frequency realism) and exactly the kind of check this
+smoke run existed to provide. At coarser density thresholds: 2/74 (2.7%)
+at >=1000, 11/74 (14.9%) at >=500.
+
+**Aggregate category-flag distribution, reported for completeness but
+NOT comparable to the 3-field/15-field baselines in the way a normal
+checkpoint would be, given the sampling-bias finding above:** 1425
+stars, 100% `qc_star_disqualified`, 100% `qc_single_filter_detection`,
+0% `qc_candidate_preliminary`/`qc_single_band_candidate`,
+`qc_contaminant_flagged_partial` 248/1425 (17.4%). These numbers are
+real and correctly computed for the population that was actually
+analyzed -- but that population is, per the finding above, almost
+entirely the structurally-unanalyzable non-Gaia-matched detections, not
+a representative cross-section of what the archive actually contains.
+Reported honestly as "what this specific (biased) run found," not as a
+fourth data point in the zero-candidates trend line alongside the
+3-field/15-field results.
+
+**Memory:** peak RSS reached 4260.5 MB (vs. 3985.6 MB in the 15-field
+run) -- consistent with, not a contradiction of, the earlier "bounded by
+distinct grid nodes touched" conclusion: this run touched 3 real-fit
+fields (`DOAR-33`, `HOPS-56-MIRI`, `HOPS-383-MIRI`, all YSO/protostar
+targets) vs. 2 before, and RSS plateaued immediately after each jump
+with zero growth across all subsequent fields including the largest
+(`NGC-891`, 1539 raw detections) -- the same plateau-not-leak signature,
+now independently reproduced on a third, much larger, randomly-drawn
+sample.
+
+**A confirming, not new, finding:** the 3 fields that DID trigger real
+photosphere fits here (`DOAR-33`, `HOPS-56-MIRI`, `HOPS-383-MIRI`) are
+all YSO/protostar-classified targets, the same population flagged
+2026-07-20 as having up to 68% RJ-extrapolation exposure -- now showing
+up as the dominant real-fit-cost driver on a second, independent,
+randomly-drawn sample, not just the original stratified one.
+
+**Status:** batch complete, real numbers reported, one high-severity
+sampling-bias bug found and fully root-caused (affecting this run and
+partially the 15-field run, not the original 3-field checks), two
+smaller real bugs found and root-caused, both flagged risks answered
+with real data. No code changed -- all fixes proposed, not applied, per
+the researcher's explicit instruction. Next decision (full 691-target
+run vs. more deferred-item work vs. the RNAAS-note path) should account
+for the sampling-bias finding specifically: any future capped run should
+use one of the two proposed fixes first, or its "zero candidates" number
+will carry the same caveat this run's does.
+
+### 2026-07-23 -- All four smoke-batch bugs fixed and verified; 75-field batch re-run shows the first `qc_candidate_preliminary` hits this project has ever produced, and a genuinely new gap found while vetting them
+
+Per the researcher's explicit direction, fixed all four bugs found above
+(not left as proposals), added regression tests for each, verified each
+fix against the exact real field that originally exposed it, then
+re-ran the full 75-field smoke batch for a direct before/after
+comparison.
+
+**Fixes, each verified against real data, not just unit tests:**
+
+1. **`pivot_to_one_row_per_star`'s unintended sort** (`pipeline/retriever.py`):
+   row order is now explicitly first-appearance order, captured before
+   `.unstack("filter")` (whose implicit ascending-index sort was the root
+   cause) and restored via `.reindex()` afterward. Verified on `HD-152249`:
+   its capped-to-20 sample went from **0 Gaia-matched, 0 dual-band
+   stars -> 5 Gaia-matched, 5 dual-band stars**, with no other code
+   change.
+2. **The batch scripts' naive first-N cap** -- replaced with a new,
+   tested utility, `cap_stars_for_compute_budget(ds, max_stars, seed)`
+   (`pipeline/retriever.py`, not just the throwaway scripts, since this
+   is a real, reusable concern for any future bounded/exploratory run).
+   **Random sampling was chosen over Gaia-matched-priority** (the other
+   option considered): a Gaia-matched-priority cap would guarantee
+   analyzable stars every time, but would make every capped-run aggregate
+   statistic (dual-band rate, real-fit rate) deliberately non-
+   representative by construction, needing a permanent caveat on every
+   future use -- random sampling preserves the capped sample's value as
+   an honest (sampling-variance-subject, not systematically-biased)
+   estimate of the field's true population, and does not change the
+   cap's worst-case compute-cost bound either way (up to `max_stars`
+   real fits was already the theoretical worst case under the old,
+   broken policy).
+3. **Coronagraphic (Lyot/4QPM) targets** -- `query_miri_observations`
+   now excludes MIRI's four coronagraphic subarrays
+   (`masklyot`/`mask1065`/`mask1140`/`mask1550`, confirmed live: 24/1179
+   observations, 3 targets archive-wide) at the query stage, since these
+   never have a `_cat.ecsv` and this pipeline's photometry method doesn't
+   apply to occulted data regardless. `load_miri_catalog_sources` also
+   gained a defensive, clearly-worded `ValueError` (naming the target and
+   observation count) if `all_sources` is ever empty for any OTHER,
+   not-yet-seen reason, replacing astropy's opaque `vstack([])` error.
+   Verified: `TYC-2571-885-1` and `BD+60-BORESIGHT` now have 0 kept
+   observations (excluded before any crash is possible); re-running the
+   smoke batch, `TYC-2571-885-1` now fails with the new clear message
+   ("0 non-coronagraphic observations... expected for a target that is
+   ENTIRELY coronagraphic") instead of the old opaque one.
+4. **Redundant Gaia cone searches for repeat-observed calibration
+   targets** -- `crossmatch_gaia` now groups observations by field
+   center (new `_group_observations_by_position`,
+   `GAIA_QUERY_DEDUP_RADIUS_ARCSEC = 5.0`) rather than by raw `obs_id`,
+   sharing one query across observations at virtually the same sky
+   position. Query grouping is position-only and has no epoch
+   dependence, so per-source epoch-propagated matching is unaffected.
+   Verified on `BD+60-1753`: `crossmatch_gaia` dropped from **439.29s to
+   60.2s (7.3x)** -- real, but smaller than a naive "79 obs -> 1 query"
+   expectation would suggest: the true per-observation field-of-view
+   center (mean of DETECTED source positions, not the nominal catalog
+   pointing) varies by up to ~64 arcsec across this target's repeat
+   visits (confirmed directly), not the ~0.2 arcsec the MAST-level
+   pointing metadata implied -- 71 non-coronagraphic observations
+   collapsed into 17 query groups, not 1. Reporting the real measured
+   number, not the optimistic one.
+
+**Regression tests: 7 new, all passing** (`tests/test_retriever.py`,
+142 -> 149 tests project-wide): two for pivot row-order preservation
+(one specific to the dual-band-vs-cap scenario, one general), two for
+`_is_coronagraphic` token matching, one for `load_miri_catalog_sources`'s
+new clear error, two for `_group_observations_by_position` (clusters
+repeat visits, leaves genuinely distant pointings ungrouped).
+
+**75-field smoke batch re-run, same 75 targets/seed, separate output
+directory so both runs' data are preserved -- direct before/after:**
+
+| metric | before (buggy cap) | after (fixed) |
+|---|---|---|
+| fields succeeded | 74/75 | 74/75 (same 1 failure: `TYC-2571-885-1`, now a clear message not a crash) |
+| total stars | 1425 | 1425 |
+| real photosphere fits | 21 (1.5%) | **112 (7.9%)** |
+| `qc_star_disqualified` | 1425 (100%) | 1403 (98.5%) |
+| `qc_single_filter_detection` | 1425 (100%) | 1390 (97.5%) |
+| `qc_candidate_preliminary` | 0 | **3** |
+| `qc_single_band_candidate` | 0 | **1** |
+| `qc_contaminant_flagged_partial` | 248 (17.4%) | 267 (18.7%) |
+| total wall time | 4630.9s (77.2 min) | 6212.0s (103.5 min, +34%) |
+| max peak RSS | 4260.5 MB | 4195.0 MB (no increase -- still bounded) |
+
+Runtime increased ~34%, exactly as anticipated before running: real
+Gaia-matched stars, and therefore real photosphere fits, now actually
+enter the analysis instead of being structurally excluded. Memory
+stayed flat, consistent with the existing "bounded by distinct grid
+nodes touched" conclusion even under substantially more real-fit load.
+
+**The first `qc_candidate_preliminary`/`qc_single_band_candidate` hits
+this project has ever produced -- vetted individually before reporting,
+same standard as CONTROLFIELD star 13, not taken at face value:**
+
+| field | star_id | classification | Teff (fit) | sigma (F770W/F1000W) |
+|---|---|---|---|---|
+| `AX-J1600.9-5142` | 5981635793916409728 | Star; WC/WN/Wolf-Rayet stars | 3654.6 K | 19.1 / -- (single-band) |
+| `HD-152249` | 5966503872513382784 | Star; O supergiants | 3554.7 K | 31.1 / 11.5 |
+| `J1757132` | 1633585176036702464 | Star; A dwarfs | 3601.8 K | 15.2 / 4.9 |
+| `SN2017gci` | 2919262234273692672 | Star; Supernovae | 3503.1 K | 26.2 / 10.8 |
+
+**Not reported as validated candidates -- a genuinely new, real gap
+found while vetting, not previously seen because no star had ever
+survived this far before the cap fix:** all four fitted Teff values
+cluster tightly around 3500-3654 K regardless of wildly different true
+stellar types -- and for three of the four, that fitted Teff is
+grossly physically inconsistent with the star's own MAST
+`target_classification`: a Wolf-Rayet star (true Teff order
+10^4-10^5 K) fit to 3655 K; an O supergiant (true Teff ~30,000 K) fit
+to 3555 K; an A dwarf (true Teff ~7,500-10,000 K) fit to 3602 K. This
+strongly suggests these are **photosphere-fit failures converging to a
+common spurious attractor**, not real circumstellar-dust excess -- the
+"excess" being measured is very likely the mismatch between real flux
+and a wrongly-cool template, not astrophysical.
+
+**Why `qc_evolved_star` (contaminants.py's existing safety net for
+exactly this class of problem) didn't catch any of them -- checked
+directly, not assumed, three different reasons across four stars:**
+`HD-152249`'s Gaia parallax is -0.197 +/- 0.436 mas (S/N effectively
+zero/negative); `AX-J1600.9-5142`'s is 0.3005 +/- 0.0684 mas (S/N=4.39,
+just under the configured `min_parallax_over_error: 5.0` gate);
+`SN2017gci`'s is 1.4387 +/- 0.7990 mas (S/N=1.80) -- all three correctly
+fail the parallax-S/N gate `is_evolved_star_overluminous` already
+requires (added 2026-07-22 specifically to prevent low-S/N parallax
+inversion from manufacturing false positives, per that entry's own
+Decision Log). **`J1757132` is the more concerning case: its parallax
+S/N is 15.2, comfortably clearing the gate, yet `qc_evolved_star` still
+did not fire** -- meaning the HR-diagram overluminosity check itself,
+not just its parallax gate, failed to flag an A-dwarf-classified star
+fit to a wildly inconsistent 3602 K. Plausible mechanism, not yet
+confirmed: the overluminosity check compares the star's parallax-based
+luminosity against what its OWN (wrongly-cool) fitted Teff predicts --
+if the Teff fit is wrong, the "is this star overluminous for its Teff"
+question is being asked with a corrupted premise, and may simply not be
+sensitive to a Teff that is wrong in this particular way. **No flag
+anywhere in this pipeline currently cross-checks a fitted `photosphere_teff`
+against the star's own `target_classification` for basic physical
+plausibility** (e.g. "Wolf-Rayet" implying Teff should never fit near
+3500 K) -- a genuinely new gap, not the RJ-extrapolation gap, not the
+already-logged evolved-star/PN-nucleus gaps, and not something any
+previous run could have surfaced, since no star had ever survived this
+far down the pipeline before the cap-bias fix. **Not fixed here** --
+flagged for the researcher's decision, same as every other gap found
+this project.
+
+**Status:** all four bugs fixed, tested, and verified against real data.
+The 75-field re-run is a materially different, more representative
+result than the original: real photosphere-fit rate went from an
+artifact-suppressed 1.5% to 7.9%, and for the first time this project
+has real `qc_candidate_preliminary` hits to look at -- all four
+currently explained as likely fit failures pending the Teff-vs-
+classification plausibility check above, not confirmed candidates and
+not confirmed non-candidates either. See the correction note below for
+what this means for the original 15-field trial's own logged
+conclusions.
+
+### 2026-07-23 -- MAST download timeout fixed (NGC6720's ~77-minute hang); root cause was transient, not a persistent per-field issue
+
+Following the 15-field re-run above, `NGC6720` hung for ~77 minutes
+during `retriever.download` before finally failing with
+`ReadTimeout: ... (read timeout=None)`. Fixed per the researcher's
+explicit request, before the archive-scale/deferred-work/writeup
+decision: "a single hung field could otherwise block a multi-hour run
+indefinitely" at full archive scale.
+
+**Root cause, confirmed directly in astroquery's own source, not
+assumed:** `astroquery.mast.Observations.download_products()` has no
+`timeout` parameter at all, and its internal `_download_files` ->
+`download_file` call chain never passes one explicitly, so every file
+download defaults to Python `requests`' own per-call timeout of `None`
+-- genuinely no timeout enforced, not a generous-but-finite one.
+`astroquery.mast.Conf.timeout` (default 600s) does NOT help here either
+-- confirmed by reading the source that it is never consulted by the
+file-download code path, only by other (metadata-query) request types;
+setting it would have been a fix that looked plausible but silently did
+nothing.
+
+**Fix:** `_DefaultTimeoutAdapter` (`pipeline/retriever.py`), a small
+`requests.HTTPAdapter` subclass mounted on `Observations`' shared
+session by `download_miri_products` (via `_mount_default_timeout_adapter`)
+-- the standard, well-precedented pattern for giving a `requests.Session`
+a default per-request timeout, since `Session` has no native setting for
+one and every individual call site would otherwise need to remember to
+pass one. `DOWNLOAD_TIMEOUT_S = (30, 120)` (connect, read) -- a "read"
+timeout on a streamed download means "no new bytes received for this
+long," not "total transfer time," so a large-but-actively-progressing
+file download is safe under this regardless of size; only a genuinely
+stalled connection trips it. Chosen generously relative to every real
+download time observed this project (5-180s) while failing orders of
+magnitude faster than the ~77-minute real hang it exists to bound.
+
+**Verified against the exact field that exposed the bug:** re-ran
+`download_miri_products` for `NGC6720` alone. **Result: succeeded in
+81.3s, all 4 products downloaded cleanly** -- no timeout even triggered,
+because nothing stalled this time. This confirms the original hang was
+a **transient MAST-side network condition specific to that request**,
+not a persistent, reproducible problem with `NGC6720`'s own data or a
+bug this project's code was causing -- exactly the "or surfaces whatever
+real underlying issue was causing MAST to be slow" question the
+researcher asked to have answered, not assumed. The real, durable value
+of this fix is bounding the BLAST RADIUS of the next transient stall
+(which will happen again eventually, over a large enough archive-scale
+run, simply because external services occasionally do this) to minutes,
+not hours -- not "eliminating" transient network slowness, which isn't
+this project's to fix.
+
+**Tests:** 2 new (`tests/test_retriever.py`,
+`test_default_timeout_adapter_*`), network-free (mock the underlying
+`HTTPAdapter.send` to capture the effective timeout, same convention as
+this project's other live-network-adjacent pure/testable splits) --
+confirm the default is injected when no timeout is specified, and that
+an explicit caller-provided timeout is never silently overridden. 151
+tests pass project-wide (149 -> 151).
+
+**Status:** fixed, tested, and verified against real data on the exact
+field that surfaced it. No further action needed on this specific bug;
+the underlying transient-network-slowness risk is now bounded, not
+eliminated (nothing about a smoke/archive run can eliminate MAST having
+a bad moment), which is the correct scope for this project's code to
+own.
+
+### 2026-07-23 -- Individual vetting of the first 4 `qc_candidate_preliminary` hits: 2 resolved (starved-fit gate implemented), 2 remain genuinely unresolved after chasing the log_g lead specifically
+
+Before any archive-scale/deferred-work/writeup decision, the researcher
+required this project's first-ever `qc_candidate_preliminary`/
+`qc_single_band_candidate` hits (75-field smoke batch, 2026-07-23) be
+understood individually, same depth as the CONTROLFIELD star 13
+walkthrough, not summarized and set aside. Full per-star walkthroughs
+below; this entry covers the two that were resolved (a real fit-quality
+gate, designed, implemented, and verified) and states clearly that the
+other two remain open, with the log_g lead specifically chased and
+found insufficient to resolve them -- their own dedicated entries follow
+this one, per the researcher's explicit instruction not to fold them
+into a routine caveat.
+
+**Self-correction, stated plainly:** the researcher's own framing going
+in (75-field batch entry) was "3 look like fit failures, 1 is a real
+gap." Actually computing the real chi2 curves for all four stars (not
+just noting the Teff-vs-classification mismatch) showed this framing
+was wrong: it's 2 clear fit-quality failures and 2 well-constrained,
+cross-validated fits with no identified problem -- a materially
+different, more honest conclusion, reported as a correction rather than
+defended.
+
+**1. HD-152249 (star_id 5966503872513382784) and SN2017gci (star_id
+2919262234273692672) -- starved-fit artifacts, mechanism now precisely
+identified, not just inferred from the classification mismatch:**
+both used only Gaia G/BP/RP (3 raw bands, no 2MASS match at all).
+Directly computing the real chi2(Teff) curve against each star's actual
+photometry (not assumed) confirmed the mechanism: with only these 3
+mutually-correlated bands, the fit is a near-degenerate 2-free-parameter
+(Teff + normalization) model against barely more than ONE real
+constraint (BP-RP; G is close to redundant with BP+RP) -- SN2017gci's
+chi2 minimum was 0.136 (essentially a perfect fit, with only 1 real
+degree of freedom after fitting 2 parameters to 3 points -- close to
+mathematically guaranteed regardless of whether the Teff is physically
+correct), HD-152249's was 6.09, both "excellent" by
+`qc_poor_photosphere_fit`'s existing reduced-chi2 threshold, which is
+exactly why that check didn't catch this failure mode -- a good chi2 is
+not evidence of a good fit when the data barely constrains the model in
+the first place. **Also confirmed independently: HD-152249's own
+detection (G=19.6 mag) cannot be the real HD 152249 (a bright,
+~V=5.9-mag naked-eye-class star) -- MAST's `target_classification`
+describes the whole pointing, not this specific faint field star, as
+this project already documented 2026-07-22.**
+
+**Fix, designed, implemented, and verified (per the researcher's
+explicit sign-off to proceed without a separate design-review round,
+since the mechanism was already directly confirmed):**
+`count_effective_bands` (`pipeline/photosphere.py`) counts genuinely
+independent photometric constraints rather than raw band count: Gaia's
+G/BP/RP (`_CORRELATED_BAND_GROUPS`) count as at most 1 combined
+effective band; each 2MASS band counts individually (2MASS spans a
+genuinely different wavelength baseline from Gaia and from each other).
+New `qc_starved_photosphere_fit` (config:
+`photosphere.min_effective_bands: 3` -- chosen to require genuine
+over-determination, >=2 real degrees of freedom against the 2-parameter
+model, not just barely-more-than-exact; precisely separates the two
+real starved cases found, effective=1, from the two well-constrained
+real candidates, effective=4, that were NOT starved) added to
+`excess.py`'s `DISQUALIFYING_STAR_FLAGS`, same convention as every
+other disqualifying flag. A genuinely separate check from
+`qc_poor_photosphere_fit`, not a duplicate or a stricter version of it
+-- catches "technically fittable but not meaningfully constrained,"
+which a chi2-based threshold structurally cannot catch on its own.
+
+**Verified three ways, not just unit-tested:** (1) 5 new pure/network-free
+tests (`tests/test_photosphere.py`, `count_effective_bands` on synthetic
+Gaia-only/Gaia+2MASS/partial/empty inputs) -- 156 tests pass project-wide
+(151 -> 156). (2) Re-ran the real, live `photosphere.run()` for both
+`HD-152249` and `SN2017gci` specifically: both now show
+`n_effective_bands=1`, `qc_starved_photosphere_fit=1`,
+`photosphere_teff` UNCHANGED (3554.65 K, 3503.12 K -- confirms the fix
+adds a diagnostic, it does not alter the underlying fit). (3) Ran the
+real `excess.assemble_level_b1` end-to-end for both stars using the new
+a1 output: **`qc_star_disqualified=1` for both,
+`disqualifying_flags='qc_starved_photosphere_fit'` cleanly (the sole
+reason), `qc_candidate_preliminary=0`** -- confirmed through the actual
+production code path, not just inferred.
+
+**Aggregate re-run impact, computed retroactively against the real
+cached a0 data for all 75-field and 15-field stars (no re-fitting
+needed -- `count_effective_bands` depends only on which raw bands are
+present, not on redoing the expensive optimizer search), then verified
+the two known cases matched exactly:**
+
+| | stars meeting the starved condition | of those, newly disqualified (were NOT already disqualified) |
+|---|---|---|
+| 75-field batch (1425 stars) | 56 | **14** |
+| 15-field batch (253 stars, 14/15 fields) | 5 | **1** |
+
+**This gate affects meaningfully more than just the two candidates that
+prompted it** -- 12 additional, previously-"clean" stars in the 75-field
+batch (beyond HD-152249/SN2017gci themselves) get newly disqualified.
+None of the 15-field batch's newly-disqualified star was ever a
+candidate (that run had zero to begin with), so this does not change
+its own already-confirmed "zero candidates, unchanged by the sampling
+fix" conclusion from the correction note above -- it only affects which
+*specific* stars are now correctly excluded as unconstrained rather than
+silently counted as "clean."
+
+**2. AX-J1600.9-5142 (star_id 5981635793916409728) and J1757132
+(star_id 1633585176036702464) -- the log_g lead was chased specifically,
+as instructed, and does NOT resolve either:** both had all 6 bands
+(Gaia + full 2MASS), sharp chi2 minima cross-validated by BOTH Kurucz
+and PHOENIX independently agreeing on the same Teff (~3650-3700 K,
+~3600 K respectively) -- not starved, not caught by the new gate, no
+plausible mundane explanation found (clean pixel cutouts, no neighbor
+within the checked radius, RUWE~1.0, no crowding/saturation/PSF-fit-
+failure flags).
+
+Tested whether `photosphere.py`'s fixed `log_g=4.5` (main-sequence/dwarf
+assumption, a known stated simplification since 2026-07-20) could be
+manufacturing the apparent excess for a star that's actually a
+subgiant/giant, by refitting both stars' REAL photometry at
+`log_g` = 4.5 (current), 4.0, 3.5, 3.0, 2.5, 2.0 (the Kurucz `ck04models`
+grid has no valid data below log_g~3.5 at the hot Teff values the
+bounded optimizer explores en route to convergence, so this used a
+direct chi2 sweep over the physically relevant cool range instead of
+the production bounded optimizer -- confirmed this doesn't change the
+comparison's validity, only how it had to be computed):
+
+| star | log_g | best Teff | reduced chi2 (vs. log_g=4.5) | predicted/observed F770W flux ratio |
+|---|---|---|---|---|
+| AX-J1600.9-5142 | 4.5 (current) | 3700 K | 3.18 (baseline) | 1.217 (21.7% excess) |
+| AX-J1600.9-5142 | 3.5 (best-case ratio) | 3700 K | 10.82 (3.4x worse) | 1.050 (5.0% excess) |
+| AX-J1600.9-5142 | 2.0 | 3800 K | 15.54 (4.9x worse) | 1.105 (10.5% excess) |
+| J1757132 | 4.5 (current) | 3600 K | 0.64 (baseline) | 1.163 (16.3% excess) |
+| J1757132 | 3.0 | 3700 K | 9.77 (15.4x worse) | 1.036 (3.6% excess) |
+| J1757132 | 2.5 | 3700 K | 11.64 (18.3x worse) | **0.999 (~0% excess)** |
+| J1757132 | 2.0 | 3700 K | 12.71 (20.0x worse) | 0.977 (slightly negative) |
+
+**Neither case resolves cleanly.** For **J1757132**, the excess DOES
+fully attenuate to ~0 at giant-appropriate log_g (2.5) -- a real,
+direct answer to "does it disappear," not a null result. But this is
+NOT a clean explanation: reaching that point costs an 18.3x worse fit
+to the very same star's own optical/near-IR photometry that determines
+its temperature in the first place -- the star's own colors actively
+prefer the dwarf assumption over any giant alternative tested. This is
+a genuine, unresolved TENSION (log_g is a real, live degree of freedom
+that COULD explain the excess, but the data disfavors the assumption
+required to invoke it), not a resolution in either direction, and is
+reported as exactly that rather than spun toward either conclusion. For
+**AX-J1600.9-5142**, even the best-case log_g (3.5, chosen by which
+point minimizes the flux ratio, not by chi2) only reduces the excess
+from 21.7% to 5.0%, at 3.4x worse chi2 -- a much weaker effect, and
+still costs real fit quality without getting close to full attenuation.
+
+**Status:** the starved-fit gate is implemented, tested, and verified
+against real data at multiple levels, resolving 2 of the first 4
+candidates with a precisely-identified, generalizable mechanism (14
+total newly-disqualified stars in the 75-field batch, not just the 2
+that prompted it). The remaining 2 candidates are NOT downgraded to a
+routine caveat -- see their own dedicated entries immediately below,
+per the researcher's explicit instruction.
+
+### 2026-07-23 -- Unresolved candidate: J1757132 (star_id 1633585176036702464) -- the single most interesting result this project has produced so far
+
+**Not resolved. Flagged for individual follow-up, not folded into a
+general caveat**, per the researcher's explicit instruction -- this is
+the strongest of this project's first four `qc_candidate_preliminary`
+hits precisely because active attempts to explain it away did not
+succeed.
+
+**The measurement:** dual-band candidate (`qc_candidate_preliminary=1`),
+F770W sigma=15.2, F1000W sigma=4.9 -- both bands independently
+significant, the primary criterion's own (already-modest) cross-
+validated credibility intact. Sigma declines with wavelength (15.2 ->
+4.9), at least consistent with warm circumstellar dust, though not
+distinguishable from an unmodeled systematic on this data alone.
+`target_classification` = "Star; A dwarfs" (field-level tag -- this
+star's own Gaia photometry, G=17.73, is not obviously the actual A-dwarf
+target itself, and the field-level-tagging caveat means this
+classification does not describe this specific star reliably either
+way -- see 2026-07-22 "Important mechanism finding").
+
+**Photosphere fit: Teff=3601.8 K (err +/-10.4 K), Kurucz, 6/6 bands used
+(Gaia G/BP/RP + 2MASS J/H/Ks), `photosphere_av`=0.10968 (a real fitted
+value, not the Av=0 uncertain-extinction fallback).** Directly computed
+chi2(Teff) against the real photometry: sharp minimum at 3600 K
+(chi2=3.2 vs. 44.0 at 3500 K and 22.1 at 3700 K), independently
+cross-validated by PHOENIX (own minimum also at 3600 K, chi2=9.9) --
+two different model-grid families agreeing is real corroboration that
+this Teff is not an artifact of Kurucz's own boundary or search
+behavior.
+
+**Every disqualifying and caveat-only flag checked, none explain it:**
+`qc_poor_photosphere_fit=0`, `qc_starved_photosphere_fit=0` (new gate,
+6 real bands used, n_effective_bands=4 -- not starved), `qc_extinction_uncertain=0`
+(a real Av was fit, not a fallback), `qc_rj_extrapolated=0`,
+`qc_grid_disagreement=0`, `qc_no_mid_ir_model_coverage=0`,
+`qc_possible_binary=0` (RUWE=1.114, `gaia_non_single_star=0`),
+`qc_crowded_source_F770W=0`, `qc_saturated_F770W=0`,
+`qc_psf_fit_failed_F770W=0`, `qc_psf_disagreement_faint/complex_F770W=0`,
+`qc_background_galaxy=0` (`is_extended_F770W=False`, sharpness=0.588,
+roundness=-0.040, all point-source-like), `qc_evolved_star=0` --
+**with parallax S/N=15.2, comfortably clearing the 5.0 gate**, meaning
+this is not a case of the gate correctly protecting against a low-S/N
+false positive; the HR-diagram overluminosity check itself, given good
+data, simply did not flag this star (mechanism not yet identified --
+plausibly because the check compares luminosity against this star's own
+Teff, so a correct Teff fit doesn't trip it, though there is no
+established overluminosity expected at 3600 K here either).
+
+**Pixel-level check (mosaic cutout at the fitted PSF position,
+`jw04496-o016_t003_miri_f770w-brightsky_i2d.fits`):** clean, isolated
+point source. Peak pixel within 0.4 px of the fitted centroid. No
+comparable-brightness neighbor in a 31x31 px cutout (nearest secondary
+structure at >4 px from center is 14.5% of the peak, consistent with
+ordinary PSF wings, not a distinct source) -- the cleanest of the two
+cutouts checked this session. One proximity note, not a disqualifying
+one: the source sits at pixel x~19 in a 599 px-wide mosaic, closer to
+the frame edge than ideal, though it passes `qc_source_off_mosaic`'s
+existing check.
+
+**The log_g lead, chased specifically and found insufficient (see the
+entry above for the full comparison table):** the excess does
+mathematically attenuate to ~0% at giant-appropriate log_g (2.5), but
+only at the cost of an 18.3x worse fit to the star's own defining
+photometry -- the data itself prefers the dwarf assumption. This is a
+real, reportable tension, not a resolution.
+
+**Honest assessment, as requested, not softened:** I looked for
+crowding, saturation, edge effects, extinction-fallback bias, grid
+disagreement, starvation, and a log_g mismatch, in that order, and did
+not find an explanation for any of them. The fit is real, tightly
+constrained by 6 independent bands, cross-validated by two grid
+families, at a completely ordinary temperature for a real star (3600 K
+is an unremarkable K/M dwarf Teff on its own). **I cannot currently
+distinguish "real mid-IR excess" from "a subtler systematic I have not
+found yet."** Candidates for what hasn't been tried: whether
+`miri_photometry.py`'s local-background annulus is biased high here
+(Deferred item 6, the one documented, unresolved, non-single-directional
+systematic in this pipeline -- not checked for this specific star);
+independent confirmation via a second epoch or instrument; or actual
+PSF-subtraction/deblending analysis, the same follow-up already named
+for CONTROLFIELD star 13.
+
+**Status:** unresolved. Flagged for individual manual review and
+follow-up, same standing as CONTROLFIELD star index 13 -- currently the
+single most interesting result this pipeline has produced, precisely
+because active, honest attempts to explain it away did not succeed.
+
+### 2026-07-23 -- Unresolved candidate: AX-J1600.9-5142 (star_id 5981635793916409728) -- well-constrained, single-band, no explanation found
+
+**Not resolved. Flagged for individual follow-up, not folded into a
+general caveat**, per the researcher's explicit instruction.
+
+**The measurement:** single-band candidate (`qc_single_band_candidate=1`),
+F770W sigma=19.1 (F1000W was never observed for this field -- a real
+filter-coverage gap, not a data-quality issue). Clears the single-band
+5.0-sigma threshold (2026-07-22 decision) by a wide margin.
+`target_classification` = "Star; WC stars; WN stars; Wolf-Rayet stars"
+(field-level tag; this star's Gaia photometry, G=16.86, is not
+independently confirmed to be the actual WR/X-ray-binary system the
+field was named for -- the field-level-tagging caveat applies here too).
+
+**Photosphere fit: Teff=3654.6 K (err +/-13.8 K), Kurucz, 6/6 bands used,
+`photosphere_av`=0 (a real fallback -- `qc_extinction_uncertain=1`,
+meaning this star's true extinction is unknown, not zero; per
+`excess.py`'s own documented reasoning this fallback biases toward
+SUPPRESSING apparent excess, so it does not explain the measured excess
+away -- if anything the true excess could be larger, not smaller, once
+real extinction is accounted for).** Chi2(Teff) computed directly:
+sharp minimum near 3650-3700 K (chi2=15.9 at 3700 K vs. 95.0 at the
+3500 K grid floor), cross-validated by PHOENIX (own minimum also near
+3600-3700 K, chi2=35.9 at 3600 K, rising again by 3800 K) -- a real,
+non-boundary, two-grid-family-agreeing minimum, same standard as
+J1757132 above.
+
+**Flags checked, none explain it:** `qc_poor_photosphere_fit=0`,
+`qc_starved_photosphere_fit=0` (n_effective_bands=4, not starved),
+`qc_rj_extrapolated=0`, `qc_grid_disagreement=0`,
+`qc_no_mid_ir_model_coverage=0`, `qc_possible_binary=0` (RUWE=1.017),
+`qc_crowded_source_F770W=0`, `qc_saturated_F770W=0`,
+`qc_psf_fit_failed_F770W=0`, `qc_background_galaxy=0`
+(`is_extended_F770W=False`), `qc_evolved_star=0` (parallax S/N=4.39,
+correctly fails the 5.0 gate -- unlike J1757132, this one IS the gate
+working as designed, not a gap in it).
+
+**Pixel-level check** (`jw05842-o001_t001_miri_f770w_i2d.fits`): clean,
+isolated point source, peak within 0.4 px of the fitted centroid. One
+softer signal than J1757132's cutout: secondary structure at >4 px from
+center reaches 41.7% of the peak value, vs. 14.5% for J1757132 -- not
+itself flagged by any existing crowding check, and consistent with
+ordinary PSF wings at this significance, but a real, slightly less
+clean-cut case worth naming rather than glossing over.
+
+**Log_g lead, chased and found weaker here than for J1757132** (see the
+gate entry above for the full table): best case (log_g=3.5) only
+reduces the excess from 21.7% to 5.0%, at 3.4x worse chi2 -- real
+attenuation, but far short of J1757132's near-complete resolution at
+its own best-case log_g, and still not free.
+
+**Honest assessment:** single-band (so structurally less cross-validated
+than J1757132's dual-band result by this project's own design), a
+somewhat less clean pixel cutout, extinction genuinely unknown (not
+zero) rather than confirmed zero, and a real but weaker log_g
+attenuation than the other unresolved case. Not as strong a case as
+J1757132, but not explained either -- the well-constrained, cross-
+validated Teff fit and clean crowding/saturation checks rule out the
+mundane explanations that resolved HD-152249/SN2017gci.
+
+**Status:** unresolved. Lower priority for follow-up than J1757132 (see
+that entry) given the weaker signal (single-band, softer pixel cutout,
+larger residual after the log_g test), but flagged individually, not
+downgraded to a general caveat.
 
 ## Deferred to Future Work (consolidated as of 2026-07-22)
 
@@ -3789,7 +4615,19 @@ prerequisite.
     sample -- survivor counts and contaminant-flag rates from either the
     3-field or 15-field checks remain explicitly NOT archive-wide
     statistics. See the positive-control caveat (2026-07-22) for the
-    clearest statement of this limitation.
+    clearest statement of this limitation. **Updated again 2026-07-23:**
+    a second, RANDOMLY-drawn 75-field/1425-star batch has since been run
+    (after fixing a real sampling bug that had been silently excluding
+    Gaia-matched stars from every capped run, this one included -- see
+    the 2026-07-23 entries) -- this is the first genuinely representative
+    (not stratified, not accidentally biased) real-data sample this
+    project has produced. Still well short of full archive scale
+    (~691 targets), but qualitatively different in kind from the earlier
+    checks, not just larger: it surfaced this project's first-ever
+    `qc_candidate_preliminary` hits (4, currently explained as likely
+    fit failures, not confirmed real or confirmed spurious -- see item 20
+    below) and a real dense-field frequency measurement (NGC-346-scale:
+    1.35% of a random draw, vs. the 15-field sample's deliberate 6.7%).
 17. **`pipeline/output.py` is still a complete stub** -- FITS catalogue,
     diagnostic figures, and LaTeX table export are all unwritten.
 18. **retriever.py's "first detection kept, not best-SNR" simplification**
@@ -3808,3 +4646,53 @@ prerequisite.
     the other; the single most interesting individual case this pipeline
     has produced so far, and a natural first candidate for real PSF-
     subtraction/deblending analysis if that capability is ever built.
+
+### A genuinely new gap, found 2026-07-23, not previously seen because no star had ever survived this far down the pipeline before that day's sampling-bias fix
+
+20. **No flag anywhere in this pipeline cross-checks a fitted
+    `photosphere_teff` against the star's own MAST `target_classification`
+    for basic physical plausibility.** Found while individually vetting
+    this project's first-ever `qc_candidate_preliminary`/
+    `qc_single_band_candidate` hits (75-field smoke batch, 2026-07-23,
+    post-cap-fix): 3 of 4 fitted to Teff~3500-3654 K despite
+    classifications implying wildly different true temperatures (a
+    Wolf-Rayet star, true Teff order 10^4-10^5 K; an O supergiant, true
+    Teff ~30,000 K; an A dwarf, true Teff ~7,500-10,000 K) -- strongly
+    suggesting photosphere-fit failures converging to a common spurious
+    attractor, not real circumstellar-dust excess. `qc_evolved_star`
+    (contaminants.py's existing safety net for exactly this class of
+    problem) did not catch any of them: 3/4 correctly failed its
+    parallax-S/N>=5 gate (working as designed), but the 4th
+    (`J1757132`, parallax S/N=15.2, comfortably clearing the gate) shows
+    the HR-diagram overluminosity check itself has a real gap too --
+    plausibly because it compares luminosity against the star's OWN
+    (potentially wrong) fitted Teff, so a bad Teff fit can corrupt the
+    very check meant to catch bad fits. Not fixed; not yet even
+    root-caused at the `fit_teff` optimizer level (why do faint/evolved
+    stars' fits converge to ~3500-3654K specifically?). Directly relevant
+    to trusting any future `qc_candidate_preliminary` hit, at any scale --
+    squarely blocks the same `qc_anomalous_excess` composite items 1-5
+    above already block, and should probably be considered alongside
+    them, not as a lower-priority addendum.
+
+    **CORRECTION NOTE, added 2026-07-23, same day:** the framing above
+    ("3 of 4... suggesting photosphere-fit failures") does not survive
+    actually computing the real chi2(Teff) curves for all four stars --
+    see the dedicated "Individual vetting" Decision Log entry. Only 2 of
+    the 4 (`HD-152249`, `SN2017gci`) are fit-quality failures, and the
+    real mechanism is a precisely-identified, now-fixed starved-fit
+    problem (Gaia-only 3-band near-degenerate fits -- see
+    `qc_starved_photosphere_fit`), NOT a Teff-vs-classification mismatch
+    per se -- the classification mismatch was a correct SYMPTOM to
+    notice but an incorrect diagnosis of the cause, and a literal
+    Teff-vs-classification plausibility check (as originally proposed
+    here) would have been the wrong fix: `target_classification` is a
+    field-level MAST tag (confirmed 2026-07-22), so it does not reliably
+    describe any specific detected star, and such a check would have
+    false-flagged the two OTHER candidates (`AX-J1600.9-5142`,
+    `J1757132`), which are well-constrained, cross-validated fits with no
+    identified problem. This item is superseded, not simply resolved:
+    the starved-fit gate is implemented and verified (see that entry);
+    the other two candidates remain genuinely unresolved and now have
+    their own dedicated entries (immediately following) rather than
+    being covered by this item.

@@ -164,6 +164,45 @@ FIT_BAND_MAG_ERR_COL = {
 # systematically over/under-weight Gaia bands in the fit.
 DEFAULT_MAG_ERR = 0.02
 
+# Real bug found 2026-07-23 (see RESEARCH_CONTEXT.md, individual vetting
+# of this project's first qc_candidate_preliminary hits): Gaia's G/BP/RP
+# are three views of the same wide optical passband family -- G is close
+# to redundant with BP+RP, so a fit using only these three provides
+# barely more real constraint than ONE color (BP-RP) against the 2-free-
+# parameter (Teff + normalization) model, not 3 independent points.
+# Confirmed directly on two real candidates (HD-152249, SN2017gci): both
+# were exactly this case, converging to a "good" chi2 that was close to
+# mathematically guaranteed regardless of the star's true Teff. Grouped
+# here so count_effective_bands can treat them as contributing at most 1
+# combined effective band; 2MASS's J/H/Ks span a genuinely different
+# wavelength baseline from Gaia and from each other, so each counts
+# individually.
+_CORRELATED_BAND_GROUPS = (
+    ("Gaia_G", "Gaia_BP", "Gaia_RP"),
+)
+
+
+def count_effective_bands(observed_mags: dict[str, float]) -> int:
+    """Counts genuinely independent photometric constraints available to
+    fit_teff, not raw band count -- see _CORRELATED_BAND_GROUPS. Bands
+    within the same correlated group count as at most 1 combined; every
+    other band (currently: all three 2MASS bands) counts individually.
+    Used for qc_starved_photosphere_fit (config:
+    photosphere.min_effective_bands), a genuinely separate check from the
+    existing n_available_bands < 2 gate above -- that gate catches "too
+    little data to fit at all"; this one catches "technically fittable,
+    but not meaningfully constrained".
+    """
+    grouped = {b for group in _CORRELATED_BAND_GROUPS for b in group}
+    n = sum(
+        1 for b in FIT_BAND_NAMES
+        if b not in grouped and np.isfinite(observed_mags.get(b, np.nan))
+    )
+    for group in _CORRELATED_BAND_GROUPS:
+        if any(np.isfinite(observed_mags.get(b, np.nan)) for b in group):
+            n += 1
+    return n
+
 # Vega-system zero points (Jy), fetched from the SVO Filter Profile Service
 # 2026-07-20 and baked in as static reference data -- see module docstring
 # for why (the live zero-point-lookup endpoint proved unreliable for broad
@@ -744,6 +783,7 @@ def fit_star(row: dict, config: dict) -> dict:
         out["qc_grid_disagreement"] = 0
         out["qc_extinction_uncertain"] = 0
         out["qc_poor_photosphere_fit"] = 0
+        out["qc_starved_photosphere_fit"] = 0
         out["qc_no_mid_ir_model_coverage"] = 0
         out["qc_rj_extrapolated"] = 0
         out["photosphere_teff"] = np.nan
@@ -753,6 +793,7 @@ def fit_star(row: dict, config: dict) -> dict:
         out["chi2"] = np.nan
         out["reduced_chi2"] = np.nan
         out["n_bands_used"] = 0
+        out["n_effective_bands"] = 0
         for band in MIRI_BAND_SVO_ID:
             out[f"predicted_flux_{band}"] = np.nan
             out[f"predicted_flux_{band}_err"] = np.nan
@@ -786,12 +827,16 @@ def fit_star(row: dict, config: dict) -> dict:
             observed_errs[b] = DEFAULT_MAG_ERR
 
     n_available_bands = sum(1 for b in FIT_BAND_NAMES if np.isfinite(observed_mags[b]))
+    n_effective_bands = count_effective_bands(observed_mags)
+    out["n_effective_bands"] = n_effective_bands
     if n_available_bands < 2:
         # Not enough photometry to constrain both Teff and normalization
         # (e.g. no Gaia match at all -- qc_no_gaia_match upstream already
         # explains why). Not a grid-choice problem, so qc_no_photosphere_grid
         # stays 0; qc_poor_photosphere_fit=1 marks the fit as untrustworthy
         # rather than attempting one with too little data to constrain it.
+        # qc_starved_photosphere_fit=1 too -- <2 raw bands is trivially also
+        # <min_effective_bands, no fit was even attempted here.
         out["qc_grid_disagreement"] = 0
         out["photosphere_teff"] = np.nan
         out["photosphere_teff_err"] = np.nan
@@ -800,6 +845,7 @@ def fit_star(row: dict, config: dict) -> dict:
         out["reduced_chi2"] = np.nan
         out["n_bands_used"] = n_available_bands
         out["qc_poor_photosphere_fit"] = 1
+        out["qc_starved_photosphere_fit"] = 1
         out["qc_no_mid_ir_model_coverage"] = 0
         out["qc_rj_extrapolated"] = 0
         for band in MIRI_BAND_SVO_ID:
@@ -832,6 +878,15 @@ def fit_star(row: dict, config: dict) -> dict:
     out["chi2"] = primary_fit["chi2"]
     out["reduced_chi2"] = primary_fit["reduced_chi2"]
     out["n_bands_used"] = primary_fit["n_bands_used"]
+
+    # qc_starved_photosphere_fit (set 2026-07-23, see module docstring for
+    # count_effective_bands/_CORRELATED_BAND_GROUPS): a genuinely separate
+    # check from qc_poor_photosphere_fit below -- a starved fit (e.g. 3
+    # correlated Gaia-only bands against a 2-free-parameter model) can
+    # report an excellent reduced_chi2 while still being essentially
+    # unconstrained, so a good chi2 alone does not clear this gate.
+    min_effective_bands = config["photosphere"]["min_effective_bands"]
+    out["qc_starved_photosphere_fit"] = int(n_effective_bands < min_effective_bands)
 
     poor_fit_threshold = config["photosphere"]["poor_fit_reduced_chi2_threshold"]
     out["qc_poor_photosphere_fit"] = int(primary_fit["reduced_chi2"] > poor_fit_threshold)

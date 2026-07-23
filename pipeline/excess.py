@@ -198,6 +198,7 @@ DISQUALIFYING_STAR_FLAGS = (
     "qc_ambiguous_gaia_match",
     "qc_no_photosphere_grid",
     "qc_poor_photosphere_fit",
+    "qc_starved_photosphere_fit",
     "qc_possible_binary",
     "qc_pms_veiling_risk",
     "qc_rj_extrapolated",
@@ -206,6 +207,11 @@ DISQUALIFYING_STAR_FLAGS = (
     # pipeline.contaminants.is_evolved_star_overluminous (qc_evolved_star),
     # a properly-derived, parallax-S/N-gated HR-diagram check. See module
     # docstring and RESEARCH_CONTEXT.md Decision Log.
+    # qc_starved_photosphere_fit added 2026-07-23 -- see photosphere.py's
+    # count_effective_bands docstring and RESEARCH_CONTEXT.md Decision
+    # Log: a fit using only Gaia's mutually-correlated G/BP/RP bands can
+    # report an excellent reduced_chi2 while being essentially
+    # unconstrained (found via two real candidates, HD-152249/SN2017gci).
 )
 
 # Per-band qc_*_{band} flags (from miri_photometry.py) that disqualify that

@@ -1,66 +1,142 @@
 cat > commit_msg.txt << 'EOF'
-feat: set single-band significance threshold, add qc_single_band_candidate
+fix: four real bugs from a 75-field smoke batch; add starved-fit gate
 
-Resolved as a near-prerequisite before any larger run, after the 15-field
-trial showed 270/273 (98.9%) of real stars are single-band-only --
-qc_candidate_preliminary requires both bands, so until this was set the
-pipeline could only ever produce a candidate from the ~1% dual-band
-minority of what real archive data actually looks like.
+75-field random-sample smoke batch (pipeline/retriever.py, config/pipeline_config.yaml):
+- Random draw (not stratified like the 15-field trial), 75 targets via
+  random.Random(20260723).sample() over the 676-target pool (691
+  archive-wide minus the 15 already tested) -- deliberately unbiased,
+  since this run's purpose (bulk-query volume, real dense-field
+  frequency) needed representativeness, not category coverage
+- Surfaced a high-severity sampling-bias bug: pivot_to_one_row_per_star's
+  .unstack("filter") call had an undocumented side effect (always sorts
+  its result ascending by star_id), which silently pushed every
+  Gaia-matched star behind every unmatched-sentinel star for every
+  field, since sentinels are small negative integers and real
+  gaia_source_ids are large positive ones. Any downstream first-N cap
+  (used by both trial/smoke batch scripts) therefore excluded nearly
+  all Gaia-matched -- and therefore all dual-band-capable -- stars
+  whenever a field had more unmatched detections than the cap (the
+  common case: 71/74 fields in this batch had zero matched stars
+  survive their cap). Retroactively confirmed this also affected 11/15
+  of the earlier 15-field trial's fields
+- Fixed at the source: row order is now explicit first-appearance
+  order, captured before unstack() and restored via reindex()
+  afterward. Verified on HD-152249: capped sample went from 0->5
+  Gaia-matched/dual-band stars with no other change
+- Fixed the batch-script capping strategy too: new
+  cap_stars_for_compute_budget(ds, max_stars, seed) (pipeline/
+  retriever.py, not just the throwaway scripts) draws a random sample
+  instead of a first-N prefix -- chosen over a Gaia-matched-priority
+  cap because it preserves the capped sample's value as an unbiased
+  population estimate rather than a deliberately non-representative one,
+  with no change to the cap's worst-case compute-cost bound
+- Fixed a real crash: coronagraphic (Lyot/4QPM) MIRI subarrays never
+  produce a _cat.ecsv catalog (confirmed live: 24/1179 observations, 3
+  targets), which used to crash load_miri_catalog_sources with
+  astropy's opaque "no values provided to stack" once every observation
+  for a target hit this case. Fixed at the query stage
+  (query_miri_observations now excludes masklyot/mask1065/mask1140/
+  mask1550), plus a defensive, clearly-worded ValueError as a backstop
+  for any other future zero-catalog cause
+- Fixed a real inefficiency: crossmatch_gaia launched one Gaia cone
+  search per raw obs_id, so repeatedly-observed calibration targets
+  triggered dozens of near-identical queries (BD+60-1753: 79
+  observations, 439s of Gaia crossmatch alone). Now groups observations
+  by field center (_group_observations_by_position,
+  GAIA_QUERY_DEDUP_RADIUS_ARCSEC=5.0) before querying -- verified 7.3x
+  real speedup (439.3s -> 60.2s) on the same field, less than a naive
+  79->1 reduction would suggest since real per-observation field
+  centers vary by up to 64 arcsec due to dither/subarray placement, not
+  the ~0.2 arcsec the target's own nominal position implied
+- Fixed the two flagged risks with real numbers: zero TAP/VizieR query
+  failures across ~222 live network calls (bulk IN-clause queries hold
+  up fine at this call volume, with the stated caveat that each stays
+  bounded to <=20 IDs per field, so true archive-scale query-string
+  length remains untested); NGC-346-scale dense fields occurred in
+  1.35% of this random draw vs. the 15-field run's deliberate 6.7%
+- Fixed a separate, real MAST download hang: NGC6720 stalled ~77
+  minutes before a ReadTimeout, because astroquery.mast's download path
+  has no timeout at all by default (confirmed in its own source;
+  Conf.timeout does not apply to file downloads). Fixed via
+  _DefaultTimeoutAdapter, a small requests.HTTPAdapter subclass mounted
+  on Observations' shared session (DOWNLOAD_TIMEOUT_S = (30, 120)s
+  connect/read) -- the standard pattern for giving a requests.Session a
+  default timeout it doesn't natively support. Re-verified NGC6720
+  alone: succeeded in 81.3s: the original hang was transient MAST-side
+  slowness, not a persistent problem with this field or this project's
+  code
+- Re-ran both the 75-field batch and the original 15-field trial with
+  all fixes applied. 75-field before/after: real photosphere-fit rate
+  1.5% -> 7.9%, qc_candidate_preliminary 0 -> 3, qc_single_band_candidate
+  0 -> 1, wall time +34% (expected: real Gaia-matched stars now
+  actually enter the analysis). 15-field before/after (same 14 fields,
+  NGC6720 excluded from both sides): qc_star_disqualified and
+  qc_candidate_preliminary unchanged (251/253, 0) -- that run's
+  zero-candidates headline holds up under the corrected sampling
 
-config/pipeline_config.yaml, pipeline/excess.py:
-- Literature check first: neither Carrigan (2009) nor Griffith et al.
-  (2015) offers a directly borrowable number. Carrigan's own resolution
-  to an analogous 2-filter problem was to avoid a 2-point significance
-  statistic entirely, adding LRS spectroscopy specifically because "the
-  associated impossibility of fitting a Planck distribution with just
-  two filter points" made a meaningful statistic impossible with only
-  two. Griffith's method is structurally multi-band (WISE colors), with
-  no single-band tier to compare against at all
-- Derived a value instead: the dual-band criterion's own credibility
-  comes from requiring both bands to independently clear 3 sigma: under
-  a rough independence approximation (one-tailed P~1.35e-3 each), the
-  joint probability is ~1.8e-6, and the single one-tailed z giving that
-  same tail probability alone is ~4.7. Rounded up to 5.0, not down,
-  given known F770W/F1000W flux-error correlation (shared PSF-fit
-  method, shared diffuse-background-annulus systematic) that the
-  independence approximation ignores
-- Verified the proposed value against real data before proposing it:
-  in the 273-star, 15-field trial, only 2/273 single-band stars even
-  reach a computed excess_sigma at all (the rest disqualified earlier,
-  chiefly qc_poor_photosphere_fit); the one large value found (sigma=
-  410.8) is already disqualified by qc_poor_photosphere_fit and
-  qc_rj_extrapolated regardless -- this value was known to change zero
-  current results before implementation, not just assumed to
-- Researcher sign-off obtained on 5.0 (offered 4.5/5.0/6.0) before
-  locking in, same process as the original significance_threshold_sigma
-  decision
-- single_band_significance_threshold_sigma: 5.0 (config); new
-  qc_single_band_candidate block in assemble_level_b1, OR-across-bands
-  (not AND like the dual-band criterion -- structurally correct since a
-  single-filter-detection star only ever has one band with real
-  photometry). Kept as its own flag, never folded into
-  qc_candidate_preliminary
+pipeline/photosphere.py, pipeline/excess.py, config/pipeline_config.yaml
+(starved-fit gate, following individual vetting of the first 4
+qc_candidate_preliminary hits):
+- Individually vetted all 4 real candidates the smoke batch produced,
+  same depth as the CONTROLFIELD star 13 walkthrough. Corrected an
+  initial framing in the process: not "3 fit failures, 1 real gap" as
+  first assumed from the Teff-vs-classification mismatch alone, but 2
+  genuine fit-quality failures (confirmed by directly computing each
+  star's real chi2(Teff) curve) and 2 well-constrained, cross-validated
+  fits with no identified problem
+- HD-152249 and SN2017gci: both used only Gaia G/BP/RP (3 mutually
+  correlated bands, no 2MASS), a near-degenerate 2-free-parameter fit
+  against barely one real color constraint -- confirmed directly
+  (SN2017gci's chi2 minimum was 0.136, essentially a guaranteed "good"
+  fit regardless of the true Teff). Also confirmed HD-152249's own
+  detection (G=19.6) cannot be the real HD 152249 (a bright ~V=5.9
+  star) -- MAST's target_classification describes the field, not this
+  star
+- New count_effective_bands()/qc_starved_photosphere_fit
+  (photosphere.min_effective_bands: 3): Gaia's G/BP/RP count as at most
+  1 combined effective band; each 2MASS band counts individually.
+  Wired into excess.py's DISQUALIFYING_STAR_FLAGS. A genuinely separate
+  check from qc_poor_photosphere_fit -- catches "technically fittable
+  but not meaningfully constrained," which a chi2 threshold alone
+  cannot
+- Verified three ways: 5 new pure/network-free tests
+  (count_effective_bands on synthetic inputs); live re-fit of both real
+  stars confirms n_effective_bands=1, qc_starved_photosphere_fit=1,
+  Teff unchanged; full excess.py run confirms qc_star_disqualified=1
+  with disqualifying_flags='qc_starved_photosphere_fit' as the sole
+  reason for both
+- Aggregate re-run impact computed retroactively against real cached
+  data (no re-fitting needed): 14/1425 stars newly disqualified in the
+  75-field batch (12 beyond the 2 that prompted it), 1/253 in the
+  15-field batch -- confirms this gate has real reach beyond the two
+  candidates that surfaced it
+- For the other 2 candidates (AX-J1600.9-5142, J1757132: both 6/6
+  bands, sharp Kurucz+PHOENIX-cross-validated chi2 minima, no
+  crowding/saturation/neighbor found via pixel-level cutout checks),
+  tested the fixed log_g=4.5 dwarf assumption as a possible explanation
+  by refitting at log_g down to 2.0. Does not cleanly resolve either:
+  J1757132's excess attenuates to ~0% at giant log_g (2.5) but only at
+  an 18.3x worse fit to the star's own optical/near-IR colors -- a real
+  tension, not a resolution; AX-J1600.9-5142's excess only drops from
+  21.7% to 5.0% at best, at 3.4x worse chi2. Both remain genuinely
+  unresolved and are documented individually in RESEARCH_CONTEXT.md,
+  not folded into a general caveat -- J1757132 (dual-band, tightest
+  chi2 minimum of the four) flagged as the most interesting result this
+  project has produced so far
 
-tests/test_excess.py:
-- 5 new tests, including one specifically constructed to prove the
-  "genuinely separate, stricter, not the primary threshold scaled down"
-  requirement: a single-band star at sigma~4.0 clears the 3.0 dual-band
-  bar but correctly fails the 5.0 single-band bar. Another confirms a
-  dual-band star with one huge-sigma band does not leak into
-  qc_single_band_candidate
-
-Real-data verification (not just synthetic unit tests): re-ran
-assemble_level_b1 against the real cached a0/a1/miri_photometry outputs
-for all 15 trial-batch fields (273 stars) with the new config --
-qc_single_band_candidate totals 0, qc_candidate_preliminary totals 0,
-exactly the "changes zero current results" prediction, now confirmed
-against real data.
+tests/test_retriever.py, tests/test_photosphere.py:
+- 14 new regression tests total: pivot row-order preservation (2),
+  coronagraphic handling (3), Gaia query-deduplication (2), download
+  timeout adapter (2), count_effective_bands (5)
+- 156 tests passing project-wide (142 -> 156 across this session)
 
 RESEARCH_CONTEXT.md:
-- Log the full literature check, derivation, sign-off, implementation,
-  and real-data verification as its own Decision Log entry
-- Mark Deferred item 4 (single_band_significance_threshold_sigma /
-  qc_single_band_candidate) resolved
-
-Test suite: 142 tests passing (up from 137 at the last commit)
+- Logged every bug, fix, and verification above as dated Decision Log
+  entries with real numbers throughout
+- Added in-place correction notes (originals preserved, not deleted) on
+  the 2026-07-22 "15-field trial batch" entry and its
+  single-band-threshold follow-up, and on Deferred item 20, each
+  stating precisely what was wrong, why, and what replaces it
+- Updated Deferred items 4, 16, and 20; added dedicated unresolved-
+  candidate entries for J1757132 and AX-J1600.9-5142
 EOF
