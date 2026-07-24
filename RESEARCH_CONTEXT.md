@@ -404,7 +404,17 @@ figures/tables specifically, both exist in the first place.
       `miri_photometry.py` (not `excess.py`/`contaminants.py`) checking
       annulus uniformity/structure around each source, or at minimum a
       manual pixel-cutout inspection of specific candidates near resolved
-      nebulosity before trusting their sigma values.
+      nebulosity before trusting their sigma values. **Partially done
+      2026-07-24 (see dedicated Decision Log entry) for the two
+      genuinely-unresolved `qc_candidate_preliminary`/
+      `qc_single_band_candidate` hits (J1757132, AX-J1600.9-5142):
+      J1757132's annulus is close to noise-limited in both bands (does not
+      explain its excess); AX-J1600.9-5142's shows real, ~12.6x-above-
+      photon-noise diffuse structure biased in the excess-inflating
+      direction, bounded at roughly a quarter to a third of its measured
+      excess -- real but partial, not a full explanation. Still no general
+      `qc_*` flag implemented -- this was a manual, per-star pixel check
+      for these two candidates only, not a systematic solution.**
 
 ## Decision Log
 
@@ -4474,6 +4484,551 @@ mundane explanations that resolved HD-152249/SN2017gci.
 that entry) given the weaker signal (single-band, softer pixel cutout,
 larger residual after the log_g test), but flagged individually, not
 downgraded to a general caveat.
+
+### 2026-07-24 -- External cross-match (SIMBAD/WISE/ZTF) and pixel-level background-annulus check for both unresolved candidates: neither check resolves either case; one check adds a real, quantified, partial contribution for AX-J1600.9-5142
+
+Two follow-on checks requested for J1757132 and AX-J1600.9-5142 specifically
+(not a general study), per the researcher's instruction to decide each
+check's interpretation before running it. Both stars' real archive data
+(Gaia-position-derived pixel coordinates, live-downloaded `_i2d` mosaics,
+live SIMBAD/AllWISE/ZTF queries) were used throughout, not synthetic data.
+
+**Interpretation decided in advance:** a null/non-detection WISE result at
+W3/W4 is INCONCLUSIVE, not evidence against a real MIRI excess -- WISE's
+~6-12" PSF and much shallower point-source sensitivity mean it can easily
+fail to detect a real, compact excess that MIRI's diffraction-limited,
+higher-sensitivity photometry does detect. A WISE non-detection only
+becomes informative if the implied flux upper limit is shown to sit below
+what the star's own MIRI-measured flux at a comparable wavelength requires
+(a real constraint) rather than merely being unconstraining. A positive
+WISE detection with excess colors would count as independent corroboration
+from a different instrument; a positive detection with normal photospheric
+colors would count as evidence against.
+
+**SIMBAD (radius 3", 10", 60"):** neither star has its own SIMBAD entry at
+any radius up to 60" -- both are unclassified field stars, consistent with
+their faint Gaia magnitudes (G=17.73, G=16.86) and with the already-
+documented field-level-tagging mismatch (neither is the actual named
+target the pointing was designed around). The 60" search is where the two
+fields diverge meaningfully: J1757132's field contains nothing but the
+actual named target (TYC 4212-455-1, ~46" away) and a field galaxy: no
+cataloged extended/nebular structure. AX-J1600.9-5142's field contains,
+all within ~45-58": the actual named WR star (`AX J1600.9-5142`, WR*,
+~45" away), an open cluster (`NAME Majaess 170`), AND a cataloged dark
+nebula (`SDC G330.036+0.917`) -- independent, external confirmation this
+is a genuinely dusty/complex line of sight, not asserted from the pixel
+data alone.
+
+**AllWISE (Vizier II/328/allwise, live query):**
+- **J1757132**: a real AllWISE counterpart at 0.086" (`J175714.73+670425.4`).
+  W1=14.347, W2=14.250 (both `qph`=A, `snr`=43.6/36.8 -- solid photospheric
+  detections, W1-W2=0.097, unremarkable). **W3=13.552, W4=9.893 are BOTH
+  non-detections** (`qph`=UU, `snr3`=-0.1, `snr4`=-0.6 -- consistent with
+  zero, not real measurements, despite being reported as magnitudes).
+  Converted to flux limits (WISE Vega zero-points 29.045 Jy/8.284 Jy):
+  W3 limit = 110.2 uJy, W4 limit = 914.2 uJy. Directly compared against
+  this project's own EE-corrected aperture-cross-check flux computed from
+  the same live mosaic/APCORR-table methodology `miri_photometry.py` uses
+  (F1000W = 88.8 uJy, close in wavelength to W3's 11.56 um): **the WISE W3
+  non-detection limit (110.2 uJy) sits only ~1.24x above the star's own
+  real, MIRI-measured 10 um flux** -- i.e. WISE's sensitivity floor at this
+  position is right at the edge of what would be needed to see this source
+  at all, fully explaining the non-detection as a sensitivity limit, not a
+  contradiction. W4's limit (914.2 uJy) is ~10x the F1000W flux and
+  trivially unconstraining. **Conclusion: genuinely inconclusive, exactly
+  as decided in advance -- WISE could not have detected this source's real
+  MIRI-measured flux level either way.**
+- **AX-J1600.9-5142**: **zero AllWISE sources within 6"** -- a complete
+  non-detection in all four bands, including W1/W2 where a star this
+  bright should ordinarily be trivial for WISE to detect. Widened to 20":
+  two bright AllWISE sources at 11.0" and 11.8" (`W1`~8.6-8.7 mag, ~1000x
+  brighter than needed for detection), **both flagged `ex=1` (AllWISE's
+  own extended/possibly-confused-source flag)** -- almost certainly the
+  WR-star/nebula complex found by the SIMBAD check above, sitting inside
+  WISE's own beam radius relative to this star. **Conclusion: the WISE
+  non-detection here is a confusion/blending null, not just a coarse-PSF
+  null -- inconclusive for an even more specific, identified reason.**
+
+**ZTF (IRSA `ztf_objects_dr24`, live query, radius 3"):**
+- **J1757132**: real ZTF light curves in zg/zr/zi (up to 1377-1504 good
+  epochs per band, spanning years). `chisq` (vs. constant-mag model) =
+  0.99-1.17 across all bands -- consistent with pure measurement noise,
+  no significant variability. `magrms` = 0.020-0.108 mag (tightest in the
+  best-sampled zr band: 0.0287 mag), `lineartrend` ~1e-6 to 1e-5 mag/day
+  (negligible over the baseline). **No eclipses, flares, or secular
+  trend** -- rules out an eclipsing companion or a dramatic dust-
+  occultation event (e.g. UXor-type behavior) as the source of the MIRI
+  excess, but does not itself bear on a smooth, non-eclipsing circumstellar
+  source, so this is elimination of one contaminant class, not
+  corroboration of a positive detection.
+- **AX-J1600.9-5142**: **zero ZTF matches -- Dec=-51.72 is outside ZTF's
+  Palomar-based northern-sky footprint entirely.** Genuinely no data, not
+  a real non-detection; correctly treated as inconclusive by construction,
+  not investigated further.
+
+**Local-background annulus (Deferred item 6, `miri_photometry.py`'s
+`skyin_px`/`skyout_px` via `MMMBackground`) -- checked at the pixel level
+for these two stars specifically, using the SAME real `_i2d` mosaics and
+the SAME CRDS APCORR-table geometry (F770W: radius=4.2166px,
+skyin=8.922px, skyout=14.644px; F1000W: radius=4.596px, skyin=6.698px,
+skyout=11.576px) the production pipeline uses:**
+
+- **J1757132 (both bands checked -- dual-band candidate):** annulus
+  pixel-to-pixel scatter is close to (F770W: annulus std=0.264 vs. median
+  per-pixel ERR=0.298 -- AT or BELOW photon-noise expectation) or modestly
+  above (F1000W: std=0.429 vs ERR=0.499, also at/below) pure photon noise
+  -- no excess scatter indicating real structure. 8-sector angular medians
+  vary by only 0.098-0.137 (F770W/F1000W), 1.6-2.3x the naive
+  noise-only expectation on a sector median (mild, not clearly
+  structure-driven). Visual cutout (asinh-stretched, annulus+aperture
+  overlaid) confirmed by eye: clean, uniform background, no visible
+  gradient or contamination. Sensitivity bound (net aperture flux using
+  the annulus's faint-half vs. bright-half median as background, a
+  deliberately pessimistic split): **F770W swing = -3.0%/+3.0%, F1000W
+  swing = -8.9%/+10.4%, both around the pipeline's actual (full-annulus,
+  sigma-clipped) net-flux value.** Both are well below the size of the
+  measured dual-band excess (F770W sigma=15.2, F1000W sigma=4.9, ~16.3%
+  observed/predicted ratio) and the excess is independently significant in
+  BOTH bands with different annulus geometries -- **this systematic cannot
+  plausibly explain the excess away.**
+- **AX-J1600.9-5142 (F770W only -- single-band candidate):** annulus
+  pixel-to-pixel scatter is **std=1.131 vs. median per-pixel ERR=0.090 --
+  ~12.6x larger than photon noise alone predicts**, unambiguous real
+  structure, not marginal. 8-sector angular medians range 42.08-45.26
+  (max-min=3.17, ~7.3% of the background level itself), with a clear
+  monotonic azimuthal trend (faintest near 135 deg, brightest near
+  315-360 deg) that is NOT a radial gradient (radial sub-annuli medians
+  are flat: 43.57-43.66 across all three radial bins) -- i.e. a real
+  large-scale diffuse asymmetry in the field, not a PSF- or
+  aperture-geometry artifact. **The buffer ring immediately adjacent to
+  the star (r=4.2-8.9px, between the photometric aperture and the sky
+  annulus) shows the SAME angular trend and reads systematically higher
+  (median=44.03) than the far annulus actually used for background
+  subtraction (median=43.63)** -- the direction that means the pipeline's
+  background estimate likely UNDER-subtracts the true local background at
+  the star's own position, inflating net flux (the "manufactures spurious
+  excess" direction named in Deferred item 6, not the safe direction).
+  Visual cutout confirms this by eye: an obvious brightness gradient across
+  the 40x40px cutout, fainter upper-left, brighter lower-left/lower-right.
+  Sensitivity bound (same faint-half/bright-half test): **F770W swing =
+  -6.5%/+7.5%** around the pipeline's actual net flux. Compared to the
+  measured 21.7% F770W excess, this bounds the systematic's plausible
+  contribution at roughly a QUARTER TO A THIRD of the total excess, not
+  the whole of it -- **a real, quantified, non-negligible contribution,
+  but NOT sufficient alone to explain the excess away; a substantial
+  majority of the 21.7% (very roughly 14-18 percentage points) remains
+  unaccounted for even under this pessimistic single-directional
+  assumption.** Independently consistent with the SIMBAD finding above
+  (cataloged dark nebula + WR star within ~1 arcmin) and the WISE
+  confusion finding (two extended sources 11-12" away) -- three
+  independent lines of evidence now agree this specific field is
+  genuinely dusty/structured, which is the physical mechanism plausibly
+  behind the annulus asymmetry, not a coincidence.
+
+**Bottom line, stated plainly, not softened in either direction:**
+neither check RESOLVES either candidate (fully explains the excess as
+mundane). For **J1757132**, both checks this session came back clean --
+WISE is genuinely uninformative (quantitatively shown to be
+sensitivity-limited, not contradictory), ZTF rules out eclipsing/eruptive
+variability, and the background annulus is close to noise-limited in both
+bands with a quantified bound well under the excess size. This does not
+add positive corroborating evidence (no independent instrument confirmed
+the excess), but it does rule out the two most concrete remaining mundane
+explanations checked so far, leaving this case, if anything, slightly
+more robust than before this session, not less. For
+**AX-J1600.9-5142**, the background-annulus check found a real,
+pixel-confirmed, environmentally-corroborated (SIMBAD, WISE-confusion)
+diffuse-structure systematic biased in the excess-inflating direction,
+bounded at roughly a quarter to a third of the measured 21.7% excess --
+a genuine, non-trivial, honestly-partial finding, not a resolution. A
+majority of both candidates' excess remains unexplained after this
+session's checks. Natural next step for AX-J1600.9-5142 specifically (not
+done here, out of this session's scope): re-measure with a 2D/gradient-
+aware local background model instead of a single sigma-clipped annulus
+median, to see how much of the excess survives; the current pipeline has
+no such capability. **CORRECTION, same day, see the follow-on entry
+immediately below: that "quarter to a third" figure does not survive
+actually attempting the gradient-aware correction just proposed as the
+next step -- it was a correctly-computed worst-case sensitivity bound,
+not a best estimate, and the real correction turns out to change nothing.
+The distinction between the two candidates' status is therefore NOT "one
+resolved-ish, one still fully open" -- see the correction entry for the
+accurate framing.**
+
+### 2026-07-24 (same day, follow-on) -- Two researcher follow-up questions: (1) is the AX-J1600.9-5142 background gradient actually correctable, and (2) is there a better W3/W4 constraint than AllWISE for J1757132? First answer required walking back part of the entry above.
+
+**Q1 (AX-J1600.9-5142): tried the natural first version of a principled
+gradient correction (least-squares plane B(x,y)=a+b*x+c*y fit to the same
+sigma-clipped F770W annulus pixels, evaluated at the star's own centroid)
+rather than just proposing it. Result: `a` (the plane's value AT the
+star's position) = 43.625, vs. the pipeline's actual sigma-clipped annulus
+median = 43.626 -- indistinguishable (differ by 0.0007, pure noise).
+Net-flux change from using the plane-corrected background: +0.01%, not
+the ~25-33% suggested by the entry above.**
+
+**Why the two don't agree, worked out analytically and confirmed
+numerically, not just observed:** for a full circular annulus reasonably
+symmetric about the star, a least-squares fit of ANY smooth polynomial in
+(x,y) -- linear, quadratic, any order -- evaluated exactly at the origin
+(the star's own position) returns just the constant term, because every
+other term (x, y, x^2, xy, ...) vanishes identically at x=y=0 BY
+CONSTRUCTION, independent of how strong the fitted gradient is. And for a
+point cloud symmetric under 180-degree rotation about that origin (true
+by construction for a full annulus), the least-squares constant term is
+itself very close to the simple sigma-clipped mean/median already used.
+**A properly centered circular sky annulus is therefore inherently immune
+to first-order (and, by the argument above, ANY-order smooth-polynomial)
+bias from a background gradient, evaluated at its own center -- no matter
+how strong that gradient is.** This is a general, reusable result for this
+project, not specific to this one star: it means the "maybe the annulus
+median is wrong because of a gradient" concern, as a purely SMOOTH-gradient
+concern, is much less dangerous than the original Deferred-item-6 framing
+implied, PROVIDED the annulus is genuinely centered on the source and
+reasonably free of clipped-out contamination. The 25-33% figure in the
+entry above was a real, correctly-computed number, but for a
+deliberately adversarial hypothetical (background = brightest/faintest
+HALF of the ring, which is not a background estimator anyone would
+actually use) -- useful as a worst-case sensitivity ceiling, not as a
+best estimate, and should not have been read as "roughly what's really
+going on" without this follow-up check. Reported as a correction, per
+project convention, not defended.
+
+**Ruled out one alternative explanation for the buffer-ring elevation
+noted in the original entry:** re-examined whether the annulus's
+non-uniformity is a mosaic exposure-coverage artifact rather than real
+signal, using the `_i2d` mosaic's own `WHT` extension (drizzle weight).
+The annulus DOES show substantial coverage non-uniformity (min=158.6,
+max=519.4, i.e. >3x range) -- but SCI vs. WHT across the same annulus
+pixels has only a weak Pearson correlation (r=0.167), and the two don't
+share the same angular pattern (WHT is roughly flat across the 8 sectors
+at 300-360, while SCI rises monotonically 42.08->45.26) -- **so the
+diffuse structure is real signal in the mosaic, not a coverage-weighting
+artifact.** The >3x WHT range itself is worth a general note (uneven
+dither/exposure depth in this region), but does not explain this
+particular gradient.
+
+**What's still a genuinely open, DIFFERENT candidate mechanism, not yet
+tested:** the near-star "buffer ring" (r=4.2-8.9px, between the aperture
+and the sky annulus) reading higher (median=44.03) than the far annulus
+(43.63) -- the original basis for the 25-33% figure -- is now more likely
+explained as MIRI's own broad PSF wings (a real, already-documented
+systematic in this pipeline; see `miri_photometry.py`'s own ~0.70-0.82x
+finite-stamp EE deficit finding) leaking real stellar flux into that
+ring, rather than diffuse sky background continuing in toward the star.
+If so, this was never a "background is unfair" problem at all -- it is a
+PSF-wing-modeling precision gap (`stpsf`'s simulated PSF vs. a true
+empirical ePSF, already named as a stated precision gap in
+`miri_photometry.py`'s own module docstring), which no background
+correction of any kind can fix. Distinguishing the two would need actual
+PSF-subtraction/deblending modeling against a validated MIRI PSF -- the
+same capability already named as needed follow-up for CONTROLFIELD star
+13 -- not attempted here.
+
+**Revised framing (supersedes the "quarter to a third" line above):**
+AX-J1600.9-5142's field is confirmed genuinely dusty/complex (SIMBAD,
+WISE confusion) and its local annulus does contain real, non-artifact
+diffuse structure -- but a proper correction shows that structure does
+NOT measurably bias this star's actual (well-centered, symmetric)
+flux measurement. **AX-J1600.9-5142 is therefore NOT "partially
+explained" by the background-annulus mechanism after all -- it returns
+to fully unresolved, on the same footing as J1757132, but for a
+different, now-more-precisely-characterized reason** (real environmental
+dust confirmed, but the specific mechanism tested for turning that into a
+photometric bias doesn't hold up; the live open question shifted to
+PSF-wing modeling, not background subtraction). The asymmetry between the
+two candidates is NOT "one mostly explained, one still open" -- it is
+"both open; J1757132 emerged from this session's checks measurably
+stronger (two concrete mundane explanations actively ruled out with
+margin), while AX-J1600.9-5142's field is more environmentally complex
+and has one additional untested mechanism (PSF-wing leakage) worth
+naming, but no completed explanation."
+
+**Q2 (J1757132): checked three specific alternatives to AllWISE for a
+better W3/W4-equivalent constraint, live, not from memory:**
+1. **NEOWISE-Reactivation (`neowiser_p1bs_psd`, confirmed live via IRSA's
+   own column listing): W3/W4 do not exist in this table at all** -- only
+   `w1*`/`w2*` columns are present. NEOWISE-R's cryostat depleted before
+   reactivation; the W3/W4 detectors have not taken data since the
+   original ~2010-2011 cryogenic mission, which AllWISE already fully
+   incorporates. **No amount of stacking NEOWISE-R data can improve the
+   W3/W4 constraint -- the band doesn't exist in that dataset, full
+   stop.** For the same reason, no deeper W3/W4 coadd (e.g. an unWISE-style
+   reprocessing) exists or can be built: AllWISE's own 4-Band+3-Band cryo
+   combination is already the full available integration time in those
+   two bands: there is no more raw W3/W4 data anywhere to add to it.
+2. **A real, much better option was found instead, incidentally, while
+   re-deriving J1757132's mosaic path for the background check above:**
+   the SAME JWST proposal/observation that produced the F770W/F1000W
+   mosaics this pipeline already uses (`jw04496-o016`, target J1757132)
+   is a full 8-filter MIRI imaging sequence, confirmed live via the MAST
+   product listing already pulled during this session --
+   F560W/F770W/F1000W/F1130W/F1280W/F1500W/F1800W/F2100W ALL exist as
+   real, public, already-reduced `_i2d.fits` Level-3 mosaics for this
+   exact star, same instrument, same epoch, same program, at MIRI's own
+   resolution/sensitivity -- categorically better than any WISE-family
+   product could ever be for this specific question, not just
+   incrementally deeper. This pipeline currently only ever fetches
+   F770W/F1000W (`retriever.mast.filters` in `config/pipeline_config.yaml`)
+   -- extracting PSF photometry at the other 6 filters (same
+   `miri_photometry.py` machinery, same APCORR-table method, just
+   different filter rows) would give an actual resolved mid-IR SED for
+   this star (5.6-21 um) rather than a 2-point ratio, letting the already-
+   noted "sigma declines 15.2->4.9 with wavelength" trend either continue,
+   flatten, or turn over -- a much sharper test of whether this looks like
+   real warm circumstellar dust than anything WISE/NEOWISE could offer.
+   Not run here (out of this session's scope, per the researcher's
+   instruction not to chase this yet) -- confirmed only that the data
+   exists and is retrievable with the existing pipeline's own method,
+   not yet extracted.
+3. **Other surveys (Spitzer IRAC/MIPS, AKARI IRC/FIS) were considered but
+   not pursued**: plausible in principle (Spitzer's 8um/24um bracket
+   similar wavelengths), but archive coverage at this exact position was
+   not checked (unlike item 2, this is not yet a confirmed option), and
+   even if covered, neither offers better sensitivity or resolution than
+   the already-confirmed, already-public MIRI multi-filter data in item 2.
+   Deprioritized accordingly, not investigated further this session.
+
+### 2026-07-24 (same day, second follow-on) -- Resolved 5.6-21 um SED for J1757132 (6 additional MIRI filters extracted): does NOT trace a smooth excess -- a genuine, structured result that weakens, not strengthens, the circumstellar-dust reading of the original F770W/F1000W detection
+
+Per the researcher's explicit instruction ("report it plainly... this is a
+genuine test that could go either way, not a step to strengthen the case
+regardless of outcome"), extracted real PSF photometry at
+F560W/F1130W/F1280W/F1500W/F1800W/F2100W for J1757132, using the exact
+same production code (`pipeline.miri_photometry.extract_flux_for_filter`,
+imported and called directly, not reimplemented) against the real,
+already-public `_i2d` mosaics from the same proposal/observation
+(`jw04496-o016`) that already provided F770W/F1000W -- all 8 filters, same
+star, same epoch, same program. All 8 filters converged cleanly (0
+`qc_psf_fit_failed`, 0 `qc_saturated`), with fitted centroids consistent
+to <1px across all 8 (x=18.6-19.3, y=58.4-59.4) -- a real, coherently
+detected point source in every band, not a fit landing on noise in some
+filters.
+
+Predicted photosphere flux at all 8 filters was computed by reproducing
+the star's own fit with `pipeline.photosphere.fit_teff`/
+`predict_miri_flux` directly (Kurucz, reusing the already-validated
+Av=0.10968 from the 2026-07-23 entry rather than re-querying the
+uncached, multi-GB Bayestar map for a value already established for this
+star) -- **reproduced Teff=3601.8 K, chi2=3.17 exactly matching the
+already-logged values**, confirming the reproduction is faithful before
+trusting the new-filter predictions built on top of it.
+
+| filter | wave (um) | observed (uJy) | predicted (uJy) | ratio | sigma |
+|---|---|---|---|---|---|
+| F560W | 5.6 | 242.60 +/- 1.59 | 224.49 +/- 1.62 | 1.081 | +7.98 |
+| F770W | 7.7 | 148.20 +/- 1.04 | 126.80 +/- 0.90 | 1.169 | +15.56 |
+| F1000W | 10.0 | 99.79 +/- 1.39 | 92.49 +/- 0.57 | 1.079 | +4.86 |
+| F1130W | 11.3 | 83.45 +/- 3.27 | 87.00 +/- 0.52 | 0.959 | -1.07 |
+| F1280W | 12.8 | 63.42 +/- 2.06 | 78.75 +/- 0.44 | 0.805 | -7.28 |
+| F1500W | 15.0 | 45.88 +/- 2.57 | 69.09 +/- 0.38 | 0.664 | -8.94 |
+| F1800W | 18.0 | 33.44 +/- 2.21 | 47.47 +/- 0.26 | 0.704 | -6.31 |
+| F2100W | 21.0 | 22.66 +/- 2.25 | 28.40 +/- 0.15 | 0.798 | -2.55 |
+
+(F770W/F1000W sigma above, 15.56/4.86, are this session's independent
+reproduction -- consistent with the already-logged 15.2/4.9 to within
+reproduction noise, cross-validating the method.)
+
+**This is NOT a smooth excess extending across the mid-IR.** It is a
+clean, significant EXCESS at the three shortest filters (5.6-10 um,
++5 to +15.6 sigma) that FLIPS SIGN into a significant DEFICIT at every
+filter from 11.3-21 um, deepest at F1500W (-8.94 sigma), with F1130W
+consistent with zero (-1.07 sigma) marking the crossover point. A real
+single-temperature circumstellar-dust excess would not be expected to
+reverse sign like this across a continuous 5.6-21 um range -- it should
+stay flat-to-rising over this range for genuinely warm dust, not flip to
+a significant deficit and partially recover.
+
+**Checked whether this is a background-annulus artifact before trusting
+it as a real spectral shape** (same discipline as the AX-J1600.9-5142
+check): annulus pixel-scatter/photon-noise ratio at F1130W/F1280W/
+F1500W/F1800W is 0.83-0.91 -- AT or BELOW the noise-only expectation,
+same clean signature already found at F770W/F1000W, and unlike
+AX-J1600.9-5142's ~12.6x-above-noise case. **No evidence of real diffuse
+contamination at any of these filters -- the deficit is not a background
+artifact.** (Worth noting for context, not as a caveat on the result
+itself: the *sensitivity* of the net flux to which half of the annulus is
+used as background is much larger in fractional terms at the faintest
+long-wavelength filters, e.g. F1500W's net flux is only ~60 uJy against a
+~42 uJy/px-equivalent background level -- but this reflects genuinely
+lower source SNR at those wavelengths, not evidence of bias, since the
+annulus itself shows no non-noise structure there.)
+
+**Leading hypothesis, stated as a hypothesis, not verified against the
+literature this session:** Kurucz/ATLAS9 model atmospheres are widely
+understood to omit or incompletely treat the molecular opacities (H2O,
+TiO, and related bands) that dominate real cool-dwarf spectra below
+~4000 K -- and this star's fit (Teff=3601.8 K) sits close to that edge,
+fit with Kurucz as primary grid (PHOENIX is unusable as an independent
+cross-check here: its native spectra stop at ~5.5 um, short of every
+filter in this new deficit region, per the already-logged PHOENIX
+mid-IR-coverage gap). A model that omits real molecular absorption
+features would predict a smoother, systematically BRIGHTER continuum
+than the star's true spectrum in exactly the wavelength ranges those
+bands suppress real flux -- which is at least directionally consistent
+with a deficit appearing specifically longward of ~11 um. This has NOT
+been verified (no direct comparison against a molecular-opacity-inclusive
+cool-star grid has been run) -- named as the leading candidate
+explanation for the deficit, not established.
+
+**Bottom line, stated exactly as instructed, not spun toward either
+conclusion:** this result does not strengthen the case that J1757132 has
+real circumstellar dust excess -- if anything it weakens it, since a
+real single-temperature dust excess should not reverse sign like this,
+and a specific, physically-motivated mundane explanation (Kurucz's known
+weakness for cool-star molecular opacity) is now newly plausible for at
+least the long-wavelength half of the SED. At the same time, this does
+NOT retroactively explain the original F770W/F1000W excess away either:
+the short-wavelength excess is still real, still significant in both
+bands, still not accounted for by any contaminant flag, background
+check, or variability check run so far -- and the same model-inadequacy
+hypothesis that plausibly explains the long-wavelength deficit does not
+obviously predict a 17-8% EXCESS at 5.6-10 um specifically (a systematic
+missing-opacity effect would be expected to bias the model redward
+overall, not produce excess at the blue end and deficit at the red end
+with a clean crossover -- this specific shape is not yet fully accounted
+for by the hypothesis above either). **Net effect on J1757132's status:
+still unresolved at 5.6-10 um, but the case is now less clean than the
+2-point version suggested, and the "smooth warm-dust excess" framing
+specifically should not be used in any writeup without this caveat.**
+Not pursued further this session, per the researcher's framing that this
+was the last check needed before moving to the RNAAS writeup.
+
+**CORRECTION, same day: the specific molecular-opacity mechanism named
+above was checked against the literature, per the researcher's explicit
+instruction not to let an unverified hypothesis reach the writeup, and
+does NOT hold up as a named explanation -- downgraded back to "unexplained
+spectral shape," per the same instruction. Full check below.**
+
+### 2026-07-24 (same day, third follow-on) -- Literature check on the molecular-opacity hypothesis for J1757132's SED shape: does not hold up as stated; retracted as a named mechanism
+
+Same standard as the extinction-precedent check (2026-07-20) and the
+Kennedy & Wyatt ruling-out (2026-07-22): targeted search, actually read
+enough of what came back to confirm or deny the specific claim, not just
+confirm the papers exist.
+
+**The general claim -- Kurucz/ATLAS9 omits or badly under-treats
+tri-atomic molecular opacity (chiefly H2O) and has incomplete TiO/VO
+treatment below ~3500-4000 K, and is not intended for use in that regime
+-- is solidly supported, independently, by multiple sources** (general
+web search, not read in full-paper depth): Kurucz's own model-atmosphere
+documentation states ATLAS9 spectra were not computed below 4000 K for
+exactly this reason; multiple secondary sources independently state the
+same ~3500-4000 K floor and the same missing-species list (H2O, TiO, VO).
+This part of the claim is fine to keep as general context (this star's
+Teff=3601.8 K genuinely does sit in a regime the model wasn't designed
+for) -- but it is NOT, on its own, the SPECIFIC mechanism proposed for
+the excess-then-deficit SED shape.
+
+**The specific, wavelength-resolved claim does NOT hold up, for two
+independent reasons, found by actually reading (not just search-snippet-
+skimming) the most relevant paper located:**
+
+1. **Wrong population.** The one paper found with a quantitative,
+   wavelength-localized ATLAS-vs-PHOENIX comparison (Lebzelter et al.
+   2012, A&A, arXiv:1209.2656, confirmed via its own abstract, fetched
+   directly) is titled "Comparative Modelling of the Spectra of Cool
+   Giants" -- **giants (low log g), not the log_g=4.5 main-sequence dwarf
+   this star was fit as.** Giant atmospheres have a fundamentally
+   different pressure/opacity structure than dwarfs at the same Teff, so
+   this comparison does not transfer directly to J1757132's case without
+   its own caveat, which the original hypothesis did not carry.
+2. **Wrong direction, even taken at face value.** That paper's own
+   reported finding (per its search-indexed summary, not yet verified by
+   a full read of the PDF itself -- the PDF text did not extract cleanly
+   this session, a real limitation stated plainly rather than glossed
+   over) is that ATLAS is featureless (i.e. missing real absorption,
+   hence TOO BRIGHT relative to reality) longward of 2.4 um except for a
+   CO band at 4.3-5.0 um, while PHOENIX shows real H2O/OH band structure
+   at 2.5-3.6 um AND **6.5-8.0 um** specifically. If this transferred
+   to J1757132, missing opacity in the 6.5-8.0 um band would make the
+   MODEL too bright there, meaning the star's real flux should look
+   FAINTER than the model (a deficit) right around F770W (7.7 um) --
+   **the OPPOSITE of what was actually measured (obs/pred=1.169,
+   +15.56 sigma EXCESS at F770W).** The one specific, wavelength-matched
+   prediction this literature offers is directly contradicted by the
+   data, not merely unconfirmed.
+3. A second, more directly relevant paper was found (Bertone et al.,
+   "ATLAS vs. NextGen model atmospheres," arXiv:astro-ph/0406215,
+   abstract read directly) -- its own conclusion is that **"ATLAS
+   provides in general a sensibly better fit"** than NextGen/PHOENIX
+   across a 334-star spectral-type sequence, the opposite emphasis from
+   "Kurucz is untrustworthy here." This abstract gives no wavelength-
+   resolved mid-IR breakdown (would need the full PDF, not pursued
+   further given points 1-2 already retract the specific claim), but its
+   existence is itself evidence against treating "Kurucz is simply bad
+   for cool stars" as a settled, one-directional fact.
+4. No paper located this session gives a dwarf-appropriate, mid-IR
+   (5-25 um) wavelength-resolved account of ATLAS9 vs. reality that would
+   predict or explain the specific excess-blueward/deficit-redward,
+   single-crossover-near-11-um shape actually measured.
+
+**Conclusion, per the researcher's explicit instruction: the
+molecular-opacity mechanism is RETRACTED as a named explanation.**
+J1757132's 5.6-21 um SED shape (excess at 5.6-10 um, deficit at
+11.3-21 um, crossover near 11 um) reverts to what it should have been
+called from the start: **a genuine, unexplained deviation from the
+Kurucz-predicted spectral shape**, checked and confirmed NOT to be a
+background-annulus artifact (2026-07-24 entry above), with a plausible
+but unconfirmed general contributing factor (Kurucz's documented
+unsuitability below ~3500-4000 K for ANY reason, not a specific named
+one) -- not a mechanism, and must not be presented as one in the RNAAS
+writeup. The short-wavelength (5.6-10 um) excess itself remains real,
+significant, and unexplained by every check run this session; the
+long-wavelength deficit is equally real and equally unexplained. Both
+should be reported as open, in this SED-shape form, not folded into a
+single named-cause narrative.
+
+### 2026-07-24 (same day, fourth follow-on) -- New, real caveat found while building the SED figure: the Kurucz ck04models grid's own native wavelength sampling is dense only to ~10 um; F1130W-F1800W's predicted flux rests on a ~10 um interpolation gap, not resolved model structure
+
+Found while generating a continuous model-spectrum curve for the SED
+figure, not assumed or looked up -- checked `get_model_spectrum("kurucz",
+3601.8, config).waveset` directly against real wavelength values.
+**The native `ck04models` grid is densely tabulated (185 points) between
+4.5-10 um, then has exactly ONE native point between 10-20 um (at
+10.02 um) and the next at 20.0 um -- a completely empty gap from
+10.02-20.0 um, confirmed by listing every native wavelength point in
+that range.** `synphot`'s bandpass integration (`synthetic_flux_jy`,
+used for every `predicted_flux_{band}` value in this project, not just
+this session's new filters) interpolates across that gap by whatever its
+default scheme is -- this was not previously visible because
+F770W/F1000W (7.7/10.0 um) both sit inside the densely-sampled region,
+so this gap has never mattered for any previously-reported
+`predicted_flux_F770W`/`predicted_flux_F1000W` value in this project's
+whole history. **It matters now**: F1130W, F1280W, F1500W, and F1800W
+(11.3/12.8/15.0/18.0 um) all fall inside this empty gap, meaning their
+`predicted_flux` values are a smooth interpolation between the model's
+own 10.02 um and 20.0 um points, not resolved native model structure at
+those specific wavelengths. (F2100W at 21.0 um is just past the 20.0 um
+point, in a separately sparse region not yet characterized in as much
+detail, same caveat applies.)
+
+**What this does and does not change:** does NOT affect the
+short-wavelength excess (F560W/F770W/F1000W, 5.6-10 um) -- entirely
+inside the densely-sampled region, unaffected. **Does weaken confidence
+in the exact SHAPE/depth of the long-wavelength deficit** (F1130W-F1800W):
+the qualitative fact that observed flux sits below whatever the model
+predicts there is still a real, measured comparison (the observed side
+of the comparison is unaffected -- this is purely about how well-resolved
+the model/predicted side is), but the specific predicted values it's
+compared against are only as good as a 2-point interpolation across
+10 um of unresolved model spectrum, not a genuine ATLAS9 prediction at
+those wavelengths. **The crossover point (~11 um) sits right at the edge
+of the well-sampled region**, so it should be described as approximate,
+not precise. The `qc_no_mid_ir_model_coverage`/`qc_rj_extrapolated`
+machinery in `photosphere.py` does not currently catch this -- that
+machinery only flags PHOENIX's total lack of coverage beyond ~5.5 um, not
+Kurucz's coarse-but-technically-nonzero coverage gap between 10-20 um.
+**Not fixed, not a blocking item for this specific note** (per the
+researcher's move to the RNAAS writeup), but a new, real, generalizable
+gap worth its own follow-on entry in "Deferred to Future Work" -- any
+future `predicted_flux_{band}` at any of F1130W/F1280W/F1500W/F1800W,
+for any star, for any future run, carries this same unstated
+interpolation-across-a-gap caveat, not just for this one star. The SED
+figure built for the RNAAS note distinguishes the densely- and
+sparsely-sampled regions visually (solid vs. dotted model curve) rather
+than presenting one continuous, equally-confident curve across the full
+range -- the write-up should carry the same caveat in text, not just in
+the figure.
 
 ## Deferred to Future Work (consolidated as of 2026-07-22)
 
