@@ -5,4 +5,10 @@ __pycache__/
 # on first use -- see ensure_kurucz_grid) and NetCDF pipeline outputs.
 data/cdbs/
 data/*.nc
-results/
+
+# results/ is ignored by default (figures/tables/NetCDF outputs regenerated
+# by the pipeline), except the RNAAS paper draft and its figure, which are
+# real, hand-maintained deliverables worth tracking.
+results/*
+!results/paper/
+!results/figures/
